@@ -18,16 +18,47 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+## Our CI consists in two kind of jobs: the `docker-based` ones and the
+## `github-hosted` ones. Both come with their upsides and downsides.
+##
+## - `docker-based` jobs rely on the `ocaml/opam` Docker images [1]. These come
+##   with a variety of tags allowing to selected between various versions of
+##   OCaml and, more importantly for us, between various OSs (several Linux
+##   distributions as well as some Windows images). However, OPAM's sandboxing
+##   mechanism, based on `bubblewrap` [2], does not behave well in Docker and it
+##   is unavailable in those images [3].
+##
+## - `github-hosted` jobs rely on the default GitHub Actions runners and the
+##   `ocaml/setup-ocaml` action [4]. This offers more limited OSes (limited to
+##   Ubuntu, Windows and macOS) but it is compatible with OPAM's sandboxing
+##   mechanism.
+##
+## We need to test that our package behaves well with the OPAM sandboxing
+## because Cargo does use network to build by default, which will not be
+## available in the sandbox, and which we therefore need to catch in CI.
+## Therefore, we need to include these `github-hosted` jobs.
+##
+## However, we also want to test that our package installs fine on a variety of
+## distributions because it depends heavily on detecting external dependencies
+## (namely Cargo and Rustc) and installing them correctly. Therefore, we also
+## need to include these `docker-based` jobs.
+##
+## [1]: https://hub.docker.com/r/ocaml/opam
+## [2]: https://github.com/containers/bubblewrap
+## [3]: https://github.com/ocurrent/docker-base-images/issues/229
+## [4]: https://github.com/ocaml/setup-ocaml
+
 jobs:
-  install-and-test:
-    name: install-and-test
+
+  github-hosted:
+    name: github-hosted
 
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu
-          - macos
+        include:
+          - {os: ubuntu}
+          - {os: macos}
 
     runs-on: ${{ matrix.os }}-latest
 
@@ -48,6 +79,10 @@ jobs:
 
       - name: Install Topiary
         id: install-topiary
+        ## `continue-on-error` will make this step succeed no matter what. The
+        ## next step will then handle the outcome of this step manually. This is
+        ## what allows us to emulate an expected CI failure.
+        continue-on-error: true
         run: |
           ## Install Topiary then report where it is and in which version.
           echo '::group::Install Topiary'
@@ -60,30 +95,72 @@ jobs:
           opam exec -- sh -c 'topiary --version'
           echo '::endgroup::'
 
-      - name: Run a smoke test
-        run: |
-          ## Run a tiny smoke test; checking that Topiary manages to start,
-          ## parse a simple OCaml command and output the right thing.
-          echo 'open Foo' > expected.ml
-          echo 'open  Foo'                                                     \
-              | opam exec -- topiary format --language ocaml                   \
-              > result.ml
-          diff expected.ml result.ml
+      - name: Check the outcome of the build
+        uses: ./.github/actions/expected-failure
+        with:
+          step-outcome: ${{ steps.install-topiary.outcome }}
+          expected-failure: ${{ matrix.ef }}
 
-      - name: Run proper tests
+      - name: Run tests
+        if: steps.install-topiary.outcome == 'success'
+        uses: ./.github/actions/run-tests
+        with:
+          topiary: opam exec -- topiary
+          samples: topiary/topiary-cli/tests/samples
+
+  docker-based:
+    name: docker-based
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {tag: alpine,          ef: expected-failure}  # https://github.com/tree-sitter/tree-sitter/issues/4184
+          - {tag: archlinux}
+          - {tag: centos,          ef: expected-failure}
+          - {tag: debian,          ef: expected-failure}
+          - {tag: debian-testing}
+          - {tag: debian-unstable}
+          - {tag: fedora}
+          - {tag: oraclelinux,     ef: expected-failure}  # Rust 1.79 < 1.83 as of 5 Feb 2025
+          - {tag: opensuse}
+          - {tag: opensuse-tumbleweed}
+          - {tag: ubuntu,          ef: expected-failure}  # Rust 1.80 < 1.83 as of 5 Feb 2025
+          - {tag: ubuntu-lts,      ef: expected-failure}  # Rust 1.80 < 1.83 as of 5 Feb 2025
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Build Docker image (see next step for failure)
+        id: build-docker-image
+        ## `continue-on-error` will make this step succeed no matter what. The
+        ## next step will then handle the outcome of this step manually. This is
+        ## what allows us to emulate an expected CI failure.
+        continue-on-error: true
         run: |
-          ## Test on OCaml implementation files (.ml)
-          cat topiary/topiary-cli/tests/samples/input/ocaml.ml                 \
-              | opam exec -- topiary format --language ocaml                   \
-              > ocaml.ml
-          diff topiary/topiary-cli/tests/samples/expected/ocaml.ml ocaml.ml
-          ## Test on OCaml interface files (.mli)
-          cat topiary/topiary-cli/tests/samples/input/ocaml-interface.mli      \
-              | opam exec -- topiary format --language ocaml_interface         \
-              > ocaml-interface.mli
-          diff \
-              topiary/topiary-cli/tests/samples/expected/ocaml-interface.mli   \
-              ocaml-interface.mli
+          docker build \
+            . \
+            --tag topiary \
+            --file .github/workflows/ci.dockerfile \
+            --build-arg tag=${{matrix.tag}}
+
+      - name: Check the outcome of the build
+        uses: ./.github/actions/expected-failure
+        with:
+          step-outcome: ${{ steps.build-docker-image.outcome }}
+          expected-failure: ${{ matrix.ef }}
+
+      - name: Run tests
+        if: steps.build-docker-image.outcome == 'success'
+        uses: ./.github/actions/run-tests
+        with:
+          topiary: docker run --interactive topiary
+          samples: topiary/topiary-cli/tests/samples
 
   flake-checks:
     name: flake-checks

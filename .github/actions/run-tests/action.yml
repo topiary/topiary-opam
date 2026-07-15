@@ -1,0 +1,36 @@
+---
+
+inputs:
+  topiary:
+    description: 'What `topiary` command to test'
+  samples:
+    description: 'Path to the test samples'
+
+runs:
+  using: composite
+
+  steps:
+    - name: Run a smoke test
+      shell: bash
+      run: |
+        ## Run a tiny smoke test; checking that Topiary manages to start,
+        ## parse a simple OCaml command and output the right thing.
+        echo 'open Foo' > expected.ml
+        echo 'open  Foo'                                                       \
+            | ${{ inputs.topiary }} format --language ocaml                    \
+            > result.ml
+        diff expected.ml result.ml
+
+    - name: Run proper tests
+      shell: bash
+      run: |
+        ## Test on OCaml implementation files (.ml)
+        cat ${{ inputs.samples }}/input/ocaml.ml                               \
+            | ${{ inputs.topiary }} format --language ocaml                    \
+            > ocaml.ml
+        diff ${{ inputs.samples }}/expected/ocaml.ml ocaml.ml
+        ## Test on OCaml interface files (.mli)
+        cat ${{ inputs.samples }}/input/ocaml-interface.mli                    \
+            | ${{ inputs.topiary }} format --language ocaml_interface          \
+            > ocaml-interface.mli
+        diff ${{ inputs.samples }}/expected/ocaml-interface.mli ocaml-interface.mli

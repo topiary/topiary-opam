@@ -1,0 +1,39 @@
+---
+
+inputs:
+  step-outcome:
+    description: 'Outcome of the step to consider'
+  expected-failure:
+    description: 'Whether a failure is expected'
+
+runs:
+  using: composite
+
+  steps:
+    - if: ${{ inputs.step-outcome == 'success'
+              && inputs.expected-failure != 'expected-failure' }}
+      shell: bash
+      run: |
+        echo "The step succeeded and was planned to succeed."
+        exit 0
+
+    - if: ${{ inputs.step-outcome != 'success'
+              && inputs.expected-failure == 'expected-failure' }}
+      shell: bash
+      run: |
+        echo "The step failed and was planned to fail."
+        exit 0
+
+    - if: ${{ inputs.step-outcome == 'success'
+              && inputs.expected-failure == 'expected-failure' }}
+      shell: bash
+      run: |
+        echo "The step succeeded but was planned to fail."
+        exit 1
+
+    - if: ${{ inputs.step-outcome != 'success'
+              && inputs.expected-failure != 'expected-failure' }}
+      shell: bash
+      run: |
+        echo "The step failed but was planned to succeed."
+        exit 1
