@@ -7,8 +7,8 @@ issues with Topiary's packaging in OPAM should be reported [here][issues].
 
 [opam]: https://opam.ocaml.org/
 [topiary]: https://topiary.tweag.io/
-[topiary-github-issues]: https://github.com/tweag/topiary/issues
-[issues]: https://github.com/tweag/topiary-opam/issues
+[topiary-github-issues]: https://github.com/topiary/topiary/issues
+[issues]: https://github.com/topiary/topiary-opam/issues
 
 Context
 -------
@@ -111,7 +111,7 @@ This repository is made of the following building blocks:
 
 - `topiary.opam` contains the definition of the OPAM package for Topiary.
 
-[topiary-github]: https://github.com/tweag/topiary
+[topiary-github]: https://github.com/topiary/topiary
 [git submodule]: https://git-scm.com/book/en/v2/Git-Tools-Submodules
 
 How to develop
@@ -184,7 +184,7 @@ How to update
   $ git fetch
   remote: Enumerating objects: 299, done.
   [...]
-  From ssh://github.com/tweag/topiary
+  From ssh://github.com/topiary/topiary
    * [new tag] v0.1.0 -> v0.1.0
   $ git checkout v0.1.0
   HEAD is now at c4fe76c GraphViz visualisation support (#326)
@@ -294,8 +294,8 @@ How to update
 - Send the new package to the [OPAM repository]. The `src` field of the `url`
   object should be:
   ```
-  https://github.com/tweag/topiary-opam/releases/download/<tag>/source-code-with-submodules.tar.xz
+  https://github.com/topiary/topiary-opam/releases/download/<tag>/source-code-with-submodules.tar.xz
   ```
 
-[new pull request]: https://github.com/tweag/topiary-opam/compare
+[new pull request]: https://github.com/topiary/topiary-opam/compare
 [opam repository]: https://github.com/ocaml/opam-repository

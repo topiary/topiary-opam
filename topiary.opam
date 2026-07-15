@@ -4,8 +4,8 @@ maintainer: "hello@tweag.io"
 authors: [ "Tweag" ]
 
 homepage: "https://topiary.tweag.io/"
-bug-reports: "https://github.com/tweag/topiary/issues"
-dev-repo: "git+https://github.com/tweag/topiary.git"
+bug-reports: "https://github.com/topiary/topiary/issues"
+dev-repo: "git+https://github.com/topiary/topiary.git"
 
 license: "MIT"
 depends: ["conf-rust-2024"]
