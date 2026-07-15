@@ -46,16 +46,22 @@ macro_rules! async_file_ext {
             /// locked.
             fn lock_exclusive(&self) -> Result<()>;
 
-            /// Locks the file for shared usage, or returns a an error if the file is
+            /// Locks the file for shared usage, or returns an error if the file is
             /// currently locked (see `lock_contended_error`).
             fn try_lock_shared(&self) -> Result<()>;
 
-            /// Locks the file for shared usage, or returns a an error if the file is
+            /// Locks the file for exclusive usage, or returns an error if the file is
             /// currently locked (see `lock_contended_error`).
             fn try_lock_exclusive(&self) -> Result<()>;
 
             /// Unlocks the file.
             fn unlock(&self) -> Result<()>;
+
+            /// Unlocks the file.
+            ///
+            /// **Note:** This method is not really "async", the underlying system call is still blocking.
+            /// Having this method as async is just for convenience when using it in async runtime.
+            fn unlock_async(&self) -> impl core::future::Future<Output = Result<()>>;
         }
 
         impl AsyncFileExt for $file {
@@ -68,16 +74,24 @@ macro_rules! async_file_ext {
             fn lock_shared(&self) -> Result<()> {
                 sys::lock_shared(self)
             }
+
             fn lock_exclusive(&self) -> Result<()> {
                 sys::lock_exclusive(self)
             }
+
             fn try_lock_shared(&self) -> Result<()> {
                 sys::try_lock_shared(self)
             }
+
             fn try_lock_exclusive(&self) -> Result<()> {
                 sys::try_lock_exclusive(self)
             }
+
             fn unlock(&self) -> Result<()> {
+                sys::unlock(self)
+            }
+
+            async fn unlock_async(&self) -> Result<()> {
                 sys::unlock(self)
             }
         }
@@ -263,8 +277,12 @@ cfg_async_std! {
     pub(crate) mod async_std_impl;
 }
 
-cfg_fs_err_tokio! {
-    pub(crate) mod fs_err_tokio_impl;
+cfg_fs_err2_tokio! {
+    pub(crate) mod fs_err2_tokio_impl;
+}
+
+cfg_fs_err3_tokio! {
+    pub(crate) mod fs_err3_tokio_impl;
 }
 
 cfg_smol! {

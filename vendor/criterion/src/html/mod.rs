@@ -5,7 +5,7 @@ use crate::estimate::Estimate;
 use crate::format;
 use crate::fs;
 use crate::measurement::ValueFormatter;
-use crate::plot::{PlotContext, PlotData, Plotter};
+use crate::plot::{LinePlotConfig, PlotContext, PlotData, Plotter};
 use crate::SavedSample;
 use criterion_plot::Size;
 use serde::Serialize;
@@ -84,6 +84,7 @@ struct SummaryContext {
 
     violin_plot: Option<String>,
     line_chart: Option<String>,
+    line_throughput_chart: Option<String>,
 
     benchmarks: Vec<IndividualBenchmark>,
 }
@@ -530,10 +531,7 @@ impl Report for Html {
         // Group IDs by group id
         let mut id_groups: HashMap<&str, Vec<&BenchmarkId>> = HashMap::new();
         for id in found_ids.iter() {
-            id_groups
-                .entry(&id.group_id)
-                .or_insert_with(Vec::new)
-                .push(id);
+            id_groups.entry(&id.group_id).or_default().push(id);
         }
 
         let mut groups = id_groups
@@ -721,7 +719,7 @@ impl Html {
                     try_else_return!(fs::load(&entry.join("sample.json")), || None);
                 let avg_times = iters
                     .into_iter()
-                    .zip(times.into_iter())
+                    .zip(times)
                     .map(|(iters, time)| time / iters)
                     .collect::<Vec<_>>();
 
@@ -759,15 +757,32 @@ impl Html {
 
         let value_types: Vec<_> = data.iter().map(|&&(id, _)| id.value_type()).collect();
         let mut line_path = None;
+        let mut line_throughput_path = None;
 
         if value_types.iter().all(|x| x == &value_types[0]) {
             if let Some(value_type) = value_types[0] {
                 let values: Vec<_> = data.iter().map(|&&(id, _)| id.as_number()).collect();
                 if values.iter().any(|x| x != &values[0]) {
-                    self.plotter
-                        .borrow_mut()
-                        .line_comparison(plot_ctx, formatter, data, value_type);
+                    self.plotter.borrow_mut().line_comparison(
+                        LinePlotConfig::time(),
+                        plot_ctx,
+                        formatter,
+                        data,
+                        value_type,
+                    );
                     line_path = Some(plot_ctx.line_comparison_path());
+
+                    // value_types being all equal implies throughput types being all equal
+                    if data[0].0.throughput.is_some() {
+                        self.plotter.borrow_mut().line_comparison(
+                            LinePlotConfig::throughput(),
+                            plot_ctx,
+                            formatter,
+                            data,
+                            value_type,
+                        );
+                        line_throughput_path = Some(plot_ctx.line_throughput_comparison_path());
+                    }
                 }
             }
         }
@@ -788,6 +803,7 @@ impl Html {
 
             violin_plot: Some(plot_ctx.violin_path().to_string_lossy().into_owned()),
             line_chart: line_path.map(|p| p.to_string_lossy().into_owned()),
+            line_throughput_chart: line_throughput_path.map(|p| p.to_string_lossy().into_owned()),
 
             benchmarks,
         };

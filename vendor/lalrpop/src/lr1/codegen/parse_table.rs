@@ -41,8 +41,8 @@ enum Comment<'a, T> {
     Reduce(T, &'a Production),
 }
 
-impl<'a, T: fmt::Display> fmt::Display for Comment<'a, T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl<T: fmt::Display> fmt::Display for Comment<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Comment::Goto(ref token, new_state) => {
                 write!(f, " // on {}, goto {}", token, new_state)
@@ -109,9 +109,9 @@ impl<'ascent, 'grammar, W: Write> CodeGenerator<'ascent, 'grammar, W, TableDrive
             // `reduce_indices` are allowed to be +1 since the negative maximum of any integer type
             // is one larger than the positive maximum
             let max_value = ::std::cmp::max(states.len(), reduce_indices.len());
-            if max_value <= ::std::i8::MAX as usize {
+            if max_value <= i8::MAX as usize {
                 "i8"
-            } else if max_value <= ::std::i16::MAX as usize {
+            } else if max_value <= i16::MAX as usize {
                 "i16"
             } else {
                 "i32"
@@ -600,8 +600,8 @@ impl<'ascent, 'grammar, W: Write> CodeGenerator<'ascent, 'grammar, W, TableDrive
                 .into_iter()
                 .map(|k2| state_lookup(k, k2))
                 .enumerate()
-                // Group consecutive indices so we can compress then as a..=b
-                .group_by(|(_, (next_state, _))| *next_state);
+                // Group consecutive indices so we can compress them as a..=b
+                .chunk_by(|(_, (next_state, _))| *next_state);
             let mut row = Vec::new();
             row.extend(&iter);
 
@@ -622,7 +622,7 @@ impl<'ascent, 'grammar, W: Write> CodeGenerator<'ascent, 'grammar, W, TableDrive
                 .drain(..)
                 // We always emit a catch-all for 0 error states (which will never be hit)
                 .filter_map(|(opt, group)| opt.map(|next_state| (next_state, group)))
-                .group_by(|(next_state, _)| *next_state))
+                .chunk_by(|(next_state, _)| *next_state))
                 .into_iter()
                 .enumerate()
                 .map(|(i, (next_state, group_group))| {
@@ -682,7 +682,7 @@ impl<'ascent, 'grammar, W: Write> CodeGenerator<'ascent, 'grammar, W, TableDrive
 
     fn write_reduction<'s>(
         custom: &TableDriven<'grammar>,
-        state: &'s Lr1State,
+        state: &'s Lr1State<'_>,
         token: &Token,
     ) -> (i32, Comment<'s, Token>) {
         let reduction = state
@@ -756,7 +756,10 @@ impl<'ascent, 'grammar, W: Write> CodeGenerator<'ascent, 'grammar, W, TableDrive
             .emit()?;
         rust!(self.out, "{{");
 
-        rust!(self.out, "match *{p}token {{", p = self.prefix);
+        // This match contains user-supplied token names.  Reenable some warnings to help them
+        // catch errors if they've got a bug in their custom lexer implementation
+        rust!(self.out, "#[warn(unused_variables)]");
+        rust!(self.out, "match {p}token {{", p = self.prefix);
 
         for (terminal, index) in self.grammar.terminals.all.iter().zip(0..) {
             if *terminal == TerminalString::Error {
@@ -970,7 +973,7 @@ impl<'ascent, 'grammar, W: Write> CodeGenerator<'ascent, 'grammar, W, TableDrive
         }
         rust!(
             self.out,
-            "_ => panic!(\"invalid action code {{}}\", {}action)",
+            "_ => panic!(\"invalid action code {{{}action}}\")",
             self.prefix
         );
         rust!(self.out, "}};");
@@ -1324,7 +1327,7 @@ impl<'ascent, 'grammar, W: Write> CodeGenerator<'ascent, 'grammar, W, TableDrive
         }
         rust!(
             self.out,
-            "_ => panic!(\"invalid reduction index {{}}\", {}reduce_index)",
+            "_ => panic!(\"invalid reduction index {{{}reduce_index}}\",)",
             self.prefix,
         );
         rust!(self.out, "}}"); // end match
@@ -1537,6 +1540,7 @@ impl<'ascent, 'grammar, W: Write> CodeGenerator<'ascent, 'grammar, W, TableDrive
 
     /// Emit the array of terminal tokens for use in generating error output
     fn emit_terminal_repr_list(&mut self) -> io::Result<()> {
+        rust!(self.out, "#[allow(clippy::needless_raw_string_hashes)]");
         rust!(self.out, "const {}TERMINAL: &[&str] = &[", self.prefix);
         let all_terminals = if self.grammar.uses_error_recovery {
             // Subtract one to exclude the error terminal

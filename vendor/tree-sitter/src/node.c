@@ -1,4 +1,5 @@
 #include <stdbool.h>
+#include "./point.h"
 #include "./subtree.h"
 #include "./tree.h"
 #include "./language.h"
@@ -355,6 +356,9 @@ static inline TSNode ts_node__descendant_for_byte_range(
   uint32_t range_end,
   bool include_anonymous
 ) {
+  if (range_start > range_end) {
+    return ts_node__null();
+  }
   TSNode node = self;
   TSNode last_visible_node = self;
 
@@ -398,6 +402,9 @@ static inline TSNode ts_node__descendant_for_point_range(
   TSPoint range_end,
   bool include_anonymous
 ) {
+  if (point_gt(range_start, range_end)) {
+    return ts_node__null();
+  }
   TSNode node = self;
   TSNode last_visible_node = self;
 
@@ -548,37 +555,6 @@ TSNode ts_node_parent(TSNode self) {
   }
 
   return node;
-}
-
-TSNode ts_node_child_containing_descendant(TSNode self, TSNode descendant) {
-  uint32_t start_byte = ts_node_start_byte(descendant);
-  uint32_t end_byte = ts_node_end_byte(descendant);
-  bool is_empty = start_byte == end_byte;
-
-  do {
-    NodeChildIterator iter = ts_node_iterate_children(&self);
-    do {
-      if (
-        !ts_node_child_iterator_next(&iter, &self)
-        || ts_node_start_byte(self) > start_byte
-        || self.id == descendant.id
-      ) {
-        return ts_node__null();
-      }
-
-      // If the descendant is empty, and the end byte is within `self`,
-      // we check whether `self` contains it or not.
-      if (is_empty && iter.position.bytes >= end_byte && ts_node_child_count(self) > 0) {
-        TSNode child = ts_node_child_with_descendant(self, descendant);
-        // If the child is not null, return self if it's relevant, else return the child
-        if (!ts_node_is_null(child)) {
-          return ts_node__is_relevant(self, true) ? self : child;
-        }
-      }
-    } while ((is_empty ? iter.position.bytes <= end_byte : iter.position.bytes < end_byte) || ts_node_child_count(self) == 0);
-  } while (!ts_node__is_relevant(self, true));
-
-  return self;
 }
 
 TSNode ts_node_child_with_descendant(TSNode self, TSNode descendant) {
@@ -885,13 +861,7 @@ void ts_node_edit(TSNode *self, const TSInputEdit *edit) {
   uint32_t start_byte = ts_node_start_byte(*self);
   TSPoint start_point = ts_node_start_point(*self);
 
-  if (start_byte >= edit->old_end_byte) {
-    start_byte = edit->new_end_byte + (start_byte - edit->old_end_byte);
-    start_point = point_add(edit->new_end_point, point_sub(start_point, edit->old_end_point));
-  } else if (start_byte > edit->start_byte) {
-    start_byte = edit->new_end_byte;
-    start_point = edit->new_end_point;
-  }
+  ts_point_edit(&start_point, &start_byte, edit);
 
   self->context[0] = start_byte;
   self->context[1] = start_point.row;

@@ -1,7 +1,10 @@
-use codespan::FileId;
 use codespan_reporting::diagnostic::Label;
 
-use crate::{identifier::LocIdent, position::RawSpan};
+use crate::{
+    files::FileId,
+    identifier::{Ident, LocIdent},
+    position::RawSpan,
+};
 use std::ops::Range;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -22,10 +25,10 @@ pub enum LexicalError {
     Generic(Range<usize>),
 }
 
-/// Error indicating that a construct is not allowed when trying to interpret an `UniRecord` as a
+/// Error indicating that a construct is not allowed when trying to interpret a `UniRecord` as a
 /// record type in a strict way.
 ///
-/// See [`UniRecord::into_type_strict`](crate::parser::uniterm::UniRecord::into_type_strict).
+/// See `parser::uniterm::UniRecord::into_type_strict`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum InvalidRecordTypeError {
     /// The record type had an invalid field, for example because it had a contract,
@@ -33,6 +36,8 @@ pub enum InvalidRecordTypeError {
     InvalidField(RawSpan),
     /// The record had an ellipsis.
     IsOpen(RawSpan),
+    /// The record has `include` statements.
+    HasInclude(RawSpan),
     /// The record type had a field whose name used string interpolation.
     InterpolatedField(RawSpan),
     /// A field name was repeated.
@@ -50,6 +55,9 @@ impl InvalidRecordTypeError {
             }
             InvalidRecordTypeError::IsOpen(pos) => {
                 vec![label(pos).with_message("cannot have ellipsis in a record type literal")]
+            }
+            InvalidRecordTypeError::HasInclude(pos) => {
+                vec![label(pos).with_message("cannot have `include` statements in a record type")]
             }
             InvalidRecordTypeError::InterpolatedField(pos) => {
                 vec![label(pos).with_message("this field uses interpolation")]
@@ -99,8 +107,17 @@ pub enum ParseError {
     /// A recursive let pattern was encountered. They are not currently supported because we
     /// decided it was too involved to implement them.
     RecursiveLetPattern(RawSpan),
+    /// Let blocks can currently only contain plain bindings, not pattern bindings.
+    PatternInLetBlock(RawSpan),
     /// A duplicate binding was encountered in a record destructuring pattern.
     DuplicateIdentInRecordPattern {
+        /// The duplicate identifier.
+        ident: LocIdent,
+        /// The previous instance of the duplicated identifier.
+        prev_ident: LocIdent,
+    },
+    /// A duplicate binding was encountered in a let block.
+    DuplicateIdentInLetBlock {
         /// The duplicate identifier.
         ident: LocIdent,
         /// The previous instance of the duplicated identifier.
@@ -144,4 +161,18 @@ pub enum ParseError {
     /// time, there are a set of expressions that can be excluded syntactically. Currently, it's
     /// mostly constants.
     InvalidContract(RawSpan),
+    /// Unrecognized explicit import format tag
+    InvalidImportFormat { span: RawSpan },
+    /// An included field has several definitions. While we could just merge both at runtime like a
+    /// piecewise field definition, we entirely forbid this situation for now.
+    MultipleFieldDecls {
+        /// The identifier.
+        ident: Ident,
+        /// The identifier and the position of the include expression. The ident part is the same
+        /// as the ident part of `ident`.
+        include_span: RawSpan,
+        /// The span of the other declaration, which can be either a field
+        /// definition or an include expression as well.
+        other_span: RawSpan,
+    },
 }

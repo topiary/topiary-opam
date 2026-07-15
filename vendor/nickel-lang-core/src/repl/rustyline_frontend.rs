@@ -13,19 +13,18 @@ pub fn config(color_opt: ColorOpt) -> Config {
     Config::builder()
         .history_ignore_space(true)
         .edit_mode(EditMode::Emacs)
-        .color_mode(color_opt.into())
+        .color_mode(color_mode_from_opt(color_opt))
         .auto_add_history(true)
         .build()
 }
 
-impl From<ColorOpt> for rustyline::config::ColorMode {
-    fn from(c: ColorOpt) -> Self {
-        use rustyline::config::ColorMode;
-        match c.0 {
-            clap::ColorChoice::Always => ColorMode::Forced,
-            clap::ColorChoice::Auto => ColorMode::Enabled,
-            clap::ColorChoice::Never => ColorMode::Disabled,
-        }
+fn color_mode_from_opt(c: ColorOpt) -> rustyline::config::ColorMode {
+    use rustyline::config::ColorMode;
+    match c {
+        colorchoice::ColorChoice::Always => ColorMode::Forced,
+        colorchoice::ColorChoice::AlwaysAnsi => ColorMode::Enabled,
+        colorchoice::ColorChoice::Auto => ColorMode::Enabled,
+        colorchoice::ColorChoice::Never => ColorMode::Disabled,
     }
 }
 
@@ -67,12 +66,20 @@ pub fn repl(histfile: PathBuf, color_opt: ColorOpt) -> Result<(), InitError> {
                                 record.fields.len()
                             )
                         }
-                        Term::RecRecord(record, dyn_fields, ..) => {
+                        Term::RecRecord(record, includes, dyn_fields, ..) => {
                             if !dyn_fields.is_empty() {
                                 println!(
                                     "Warning: loading dynamic fields is currently not supported. \
                                     {} symbols ignored",
                                     dyn_fields.len()
+                                );
+                            }
+
+                            if !includes.is_empty() {
+                                println!(
+                                    "Warning: loading record with `include` expressions is currently not supported. \
+                                    {} symbols ignored",
+                                    includes.len()
                                 );
                             }
 

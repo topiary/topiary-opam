@@ -4,22 +4,21 @@
 mod windows_imports {}
 #[cfg(any(not(libloading_docs), windows))]
 mod windows_imports {
-    use super::{DWORD, BOOL, HANDLE, HMODULE, FARPROC};
-    pub(super) use std::os::windows::ffi::{OsStrExt, OsStringExt};
-    windows_targets::link!("kernel32.dll" "system" fn GetLastError() -> DWORD);
-    windows_targets::link!("kernel32.dll" "system" fn SetThreadErrorMode(new_mode: DWORD, old_mode: *mut DWORD) -> BOOL);
-    windows_targets::link!("kernel32.dll" "system" fn GetModuleHandleExW(flags: u32, module_name: *const u16, module: *mut HMODULE) -> BOOL);
-    windows_targets::link!("kernel32.dll" "system" fn FreeLibrary(module: HMODULE) -> BOOL);
-    windows_targets::link!("kernel32.dll" "system" fn LoadLibraryExW(filename: *const u16, file: HANDLE, flags: DWORD) -> HMODULE);
-    windows_targets::link!("kernel32.dll" "system" fn GetModuleFileNameW(module: HMODULE, filename: *mut u16, size: DWORD) -> DWORD);
-    windows_targets::link!("kernel32.dll" "system" fn GetProcAddress(module: HMODULE, procname: *const u8) -> FARPROC);
+    use super::{BOOL, DWORD, FARPROC, HANDLE, HMODULE};
+    windows_link::link!("kernel32.dll" "system" fn GetLastError() -> DWORD);
+    windows_link::link!("kernel32.dll" "system" fn SetThreadErrorMode(new_mode: DWORD, old_mode: *mut DWORD) -> BOOL);
+    windows_link::link!("kernel32.dll" "system" fn GetModuleHandleExW(flags: u32, module_name: *const u16, module: *mut HMODULE) -> BOOL);
+    windows_link::link!("kernel32.dll" "system" fn FreeLibrary(module: HMODULE) -> BOOL);
+    windows_link::link!("kernel32.dll" "system" fn LoadLibraryExW(filename: *const u16, file: HANDLE, flags: DWORD) -> HMODULE);
+    windows_link::link!("kernel32.dll" "system" fn GetModuleFileNameW(module: HMODULE, filename: *mut u16, size: DWORD) -> DWORD);
+    windows_link::link!("kernel32.dll" "system" fn GetProcAddress(module: HMODULE, procname: *const u8) -> FARPROC);
 }
 
 use self::windows_imports::*;
-use util::{ensure_compatible_types, cstr_cow_from_bytes};
-use std::ffi::{OsStr, OsString};
-use std::{fmt, io, marker, mem, ptr};
-use std::os::raw;
+use crate::as_filename::AsFilename;
+use crate::as_symbol_name::AsSymbolName;
+use crate::util::ensure_compatible_types;
+use core::{fmt, marker, mem, ptr};
 
 /// The platform-specific counterpart of the cross-platform [`Library`](crate::Library).
 pub struct Library(HMODULE);
@@ -67,7 +66,7 @@ impl Library {
     /// termination routines contained within the library is safe as well. These routines may be
     /// executed when the library is unloaded.
     #[inline]
-    pub unsafe fn new<P: AsRef<OsStr>>(filename: P) -> Result<Library, crate::Error> {
+    pub unsafe fn new(filename: impl AsFilename) -> Result<Library, crate::Error> {
         Library::load_with_flags(filename, 0)
     }
 
@@ -83,14 +82,18 @@ impl Library {
     pub fn this() -> Result<Library, crate::Error> {
         unsafe {
             let mut handle: HMODULE = 0;
-            with_get_last_error(|source| crate::Error::GetModuleHandleExW { source }, || {
-                let result = GetModuleHandleExW(0, std::ptr::null_mut(), &mut handle);
-                if result == 0 {
-                    None
-                } else {
-                    Some(Library(handle))
-                }
-            }).map_err(|e| e.unwrap_or(crate::Error::GetModuleHandleExWUnknown))
+            with_get_last_error(
+                |source| crate::Error::GetModuleHandleExW { source },
+                || {
+                    let result = GetModuleHandleExW(0, ptr::null_mut(), &mut handle);
+                    if result == 0 {
+                        None
+                    } else {
+                        Some(Library(handle))
+                    }
+                },
+            )
+            .map_err(|e| e.unwrap_or(crate::Error::GetModuleHandleExWUnknown))
         }
     }
 
@@ -111,26 +114,26 @@ impl Library {
     /// This is equivalent to `GetModuleHandleExW(0, filename, _)`.
     ///
     /// [MSDN]: https://docs.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-getmodulehandleexw
-    pub fn open_already_loaded<P: AsRef<OsStr>>(filename: P) -> Result<Library, crate::Error> {
-        let wide_filename: Vec<u16> = filename.as_ref().encode_wide().chain(Some(0)).collect();
-
-        let ret = unsafe {
-            let mut handle: HMODULE = 0;
-            with_get_last_error(|source| crate::Error::GetModuleHandleExW { source }, || {
-                // Make sure no winapi calls as a result of drop happen inside this closure, because
-                // otherwise that might change the return value of the GetLastError.
-                let result = GetModuleHandleExW(0, wide_filename.as_ptr(), &mut handle);
-                if result == 0 {
-                    None
-                } else {
-                    Some(Library(handle))
-                }
-            }).map_err(|e| e.unwrap_or(crate::Error::GetModuleHandleExWUnknown))
-        };
-
-        drop(wide_filename); // Drop wide_filename here to ensure it doesn’t get moved and dropped
-                             // inside the closure by mistake. See comment inside the closure.
-        ret
+    pub fn open_already_loaded(filename: impl AsFilename) -> Result<Library, crate::Error> {
+        filename.windows_filename(|windows_filename| {
+            unsafe {
+                let mut handle: HMODULE = 0;
+                with_get_last_error(
+                    |source| crate::Error::GetModuleHandleExW { source },
+                    || {
+                        // Make sure no winapi calls as a result of drop happen inside this closure, because
+                        // otherwise that might change the return value of the GetLastError.
+                        let result = GetModuleHandleExW(0, windows_filename, &mut handle);
+                        if result == 0 {
+                            None
+                        } else {
+                            Some(Library(handle))
+                        }
+                    },
+                )
+                .map_err(|e| e.unwrap_or(crate::Error::GetModuleHandleExWUnknown))
+            }
+        })
     }
 
     /// Find and load a module, additionally adjusting behaviour with flags.
@@ -152,23 +155,65 @@ impl Library {
     /// Additionally, the callers of this function must also ensure that execution of the
     /// termination routines contained within the library is safe as well. These routines may be
     /// executed when the library is unloaded.
-    pub unsafe fn load_with_flags<P: AsRef<OsStr>>(filename: P, flags: LOAD_LIBRARY_FLAGS) -> Result<Library, crate::Error> {
-        let wide_filename: Vec<u16> = filename.as_ref().encode_wide().chain(Some(0)).collect();
-        let _guard = ErrorModeGuard::new();
+    pub unsafe fn load_with_flags(
+        filename: impl AsFilename,
+        flags: LOAD_LIBRARY_FLAGS,
+    ) -> Result<Library, crate::Error> {
+        filename.windows_filename(|windows_filename| {
+            let _guard = ErrorModeGuard::new();
+            with_get_last_error(
+                |source| crate::Error::LoadLibraryExW { source },
+                || {
+                    // Make sure no winapi calls as a result of drop happen inside this closure, because
+                    // otherwise that might change the return value of the GetLastError.
+                    let handle = LoadLibraryExW(windows_filename, 0, flags);
+                    if handle == 0 {
+                        None
+                    } else {
+                        Some(Library(handle))
+                    }
+                },
+            )
+            .map_err(|e| e.unwrap_or(crate::Error::LoadLibraryExWUnknown))
+        })
+    }
 
-        let ret = with_get_last_error(|source| crate::Error::LoadLibraryExW { source }, || {
-            // Make sure no winapi calls as a result of drop happen inside this closure, because
-            // otherwise that might change the return value of the GetLastError.
-            let handle = LoadLibraryExW(wide_filename.as_ptr(), 0, flags);
-            if handle == 0 {
-                None
-            } else {
-                Some(Library(handle))
-            }
-        }).map_err(|e| e.unwrap_or(crate::Error::LoadLibraryExWUnknown));
-        drop(wide_filename); // Drop wide_filename here to ensure it doesn’t get moved and dropped
-                             // inside the closure by mistake. See comment inside the closure.
-        ret
+    /// Attempts to pin the module represented by the current `Library` into memory.
+    ///
+    /// Calls `GetModuleHandleExW` with the flag `GET_MODULE_HANDLE_EX_FLAG_PIN` to pin the module.
+    /// See the [MSDN documentation][msdn] for more information.
+    ///
+    /// [msdn]: https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-getmodulehandleexw
+    ///
+    /// If successful, the module will remain in memory regardless of the refcount for this `Library`
+    pub fn pin(&self) -> Result<(), crate::Error> {
+        const GET_MODULE_HANDLE_EX_FLAG_PIN: u32 = 0x1;
+        const GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS: u32 = 0x4;
+        unsafe {
+            let mut handle: HMODULE = 0;
+            with_get_last_error(
+                |source| crate::Error::GetModuleHandleExW { source },
+                || {
+                    // Make sure no winapi calls as a result of drop happen inside this closure, because
+                    // otherwise that might change the return value of the GetLastError.
+
+                    // We use our cached module handle of this `Library` instead of the module name. This works
+                    // if we also pass the flag `GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS` because on Windows, module handles
+                    // are the loaded base address of the module.
+                    let result = GetModuleHandleExW(
+                        GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                        self.0 as *const u16,
+                        &mut handle,
+                    );
+                    if result == 0 {
+                        None
+                    } else {
+                        Some(())
+                    }
+                },
+            )
+            .map_err(|e| e.unwrap_or(crate::Error::GetModuleHandleExWUnknown))
+        }
     }
 
     /// Get a pointer to a function or static variable by symbol name.
@@ -182,20 +227,25 @@ impl Library {
     /// # Safety
     ///
     /// Users of this API must specify the correct type of the function or variable loaded.
-    pub unsafe fn get<T>(&self, symbol: &[u8]) -> Result<Symbol<T>, crate::Error> {
+    pub unsafe fn get<T>(&self, symbol: impl AsSymbolName) -> Result<Symbol<T>, crate::Error> {
         ensure_compatible_types::<T, FARPROC>()?;
-        let symbol = cstr_cow_from_bytes(symbol)?;
-        with_get_last_error(|source| crate::Error::GetProcAddress { source }, || {
-            let symbol = GetProcAddress(self.0, symbol.as_ptr().cast());
-            if symbol.is_none() {
-                None
-            } else {
-                Some(Symbol {
-                    pointer: symbol,
-                    pd: marker::PhantomData
-                })
-            }
-        }).map_err(|e| e.unwrap_or(crate::Error::GetProcAddressUnknown))
+        symbol.symbol_name(|windows_symbol| {
+            with_get_last_error(
+                |source| crate::Error::GetProcAddress { source },
+                || {
+                    let symbol = GetProcAddress(self.0, windows_symbol.cast());
+                    if symbol.is_none() {
+                        None
+                    } else {
+                        Some(Symbol {
+                            pointer: symbol,
+                            pd: marker::PhantomData,
+                        })
+                    }
+                },
+            )
+            .map_err(|e| e.unwrap_or(crate::Error::GetProcAddressUnknown))
+        })
     }
 
     /// Get a pointer to a function or static variable by ordinal number.
@@ -205,18 +255,22 @@ impl Library {
     /// Users of this API must specify the correct type of the function or variable loaded.
     pub unsafe fn get_ordinal<T>(&self, ordinal: u16) -> Result<Symbol<T>, crate::Error> {
         ensure_compatible_types::<T, FARPROC>()?;
-        with_get_last_error(|source| crate::Error::GetProcAddress { source }, || {
-            let ordinal = ordinal as usize as *const _;
-            let symbol = GetProcAddress(self.0, ordinal);
-            if symbol.is_none() {
-                None
-            } else {
-                Some(Symbol {
-                    pointer: symbol,
-                    pd: marker::PhantomData
-                })
-            }
-        }).map_err(|e| e.unwrap_or(crate::Error::GetProcAddressUnknown))
+        with_get_last_error(
+            |source| crate::Error::GetProcAddress { source },
+            || {
+                let ordinal = ordinal as usize as *const _;
+                let symbol = GetProcAddress(self.0, ordinal);
+                if symbol.is_none() {
+                    None
+                } else {
+                    Some(Symbol {
+                        pointer: symbol,
+                        pd: marker::PhantomData,
+                    })
+                }
+            },
+        )
+        .map_err(|e| e.unwrap_or(crate::Error::GetProcAddressUnknown))
     }
 
     /// Convert the `Library` to a raw handle.
@@ -244,45 +298,55 @@ impl Library {
     ///
     /// The underlying data structures may still get leaked if an error does occur.
     pub fn close(self) -> Result<(), crate::Error> {
-        let result = with_get_last_error(|source| crate::Error::FreeLibrary { source }, || {
-            if unsafe { FreeLibrary(self.0) == 0 } {
-                None
-            } else {
-                Some(())
-            }
-        }).map_err(|e| e.unwrap_or(crate::Error::FreeLibraryUnknown));
+        let result = with_get_last_error(
+            |source| crate::Error::FreeLibrary { source },
+            || {
+                if unsafe { FreeLibrary(self.0) == 0 } {
+                    None
+                } else {
+                    Some(())
+                }
+            },
+        )
+        .map_err(|e| e.unwrap_or(crate::Error::FreeLibraryUnknown));
         // While the library is not free'd yet in case of an error, there is no reason to try
         // dropping it again, because all that will do is try calling `FreeLibrary` again. only
         // this time it would ignore the return result, which we already seen failing...
-        std::mem::forget(self);
+        mem::forget(self);
         result
     }
 }
 
 impl Drop for Library {
     fn drop(&mut self) {
-        unsafe { FreeLibrary(self.0); }
+        unsafe {
+            FreeLibrary(self.0);
+        }
     }
 }
 
 impl fmt::Debug for Library {
+    #[cfg(feature = "std")]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         unsafe {
             // FIXME: use Maybeuninit::uninit_array when stable
-            let mut buf =
-                mem::MaybeUninit::<[mem::MaybeUninit<u16>; 1024]>::uninit().assume_init();
-            let len = GetModuleFileNameW(self.0,
-                buf[..].as_mut_ptr().cast(), 1024) as usize;
+            let mut buf = mem::MaybeUninit::<[mem::MaybeUninit<u16>; 1024]>::uninit().assume_init();
+            let len = GetModuleFileNameW(self.0, buf[..].as_mut_ptr().cast(), 1024) as usize;
             if len == 0 {
-                f.write_str(&format!("Library@{:#x}", self.0))
+                f.write_fmt(format_args!("Library@{:#x}", self.0))
             } else {
-                let string: OsString = OsString::from_wide(
+                let string: std::ffi::OsString = std::os::windows::ffi::OsStringExt::from_wide(
                     // FIXME: use Maybeuninit::slice_get_ref when stable
                     &*(&buf[..len] as *const [_] as *const [u16]),
                 );
-                f.write_str(&format!("Library@{:#x} from {:?}", self.0, string))
+                f.write_fmt(format_args!("Library@{:#x} from {:?}", self.0, string))
             }
         }
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_fmt(format_args!("Library@{:#x}", self.0))
     }
 }
 
@@ -292,7 +356,7 @@ impl fmt::Debug for Library {
 /// `Symbol` does not outlive the `Library` that it comes from.
 pub struct Symbol<T> {
     pointer: FARPROC,
-    pd: marker::PhantomData<T>
+    pd: marker::PhantomData<T>,
 }
 
 impl<T> Symbol<T> {
@@ -302,10 +366,10 @@ impl<T> Symbol<T> {
     }
 
     /// Convert the loaded `Symbol` into a raw pointer.
-    pub fn as_raw_ptr(self) -> *mut raw::c_void {
+    pub fn as_raw_ptr(self) -> *mut core::ffi::c_void {
         self.pointer
-            .map(|raw| raw as *mut raw::c_void)
-            .unwrap_or(std::ptr::null_mut())
+            .map(|raw| raw as *mut core::ffi::c_void)
+            .unwrap_or(ptr::null_mut())
     }
 }
 
@@ -332,7 +396,7 @@ impl<T> Clone for Symbol<T> {
     }
 }
 
-impl<T> ::std::ops::Deref for Symbol<T> {
+impl<T> core::ops::Deref for Symbol<T> {
     type Target = T;
     fn deref(&self) -> &T {
         unsafe { &*((&self.pointer) as *const FARPROC as *const T) }
@@ -343,7 +407,7 @@ impl<T> fmt::Debug for Symbol<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.pointer {
             None => f.write_str("Symbol@0x0"),
-            Some(ptr) => f.write_str(&format!("Symbol@{:p}", ptr as *const ())),
+            Some(ptr) => f.write_fmt(format_args!("Symbol@{:p}", ptr as *const ())),
         }
     }
 }
@@ -378,19 +442,22 @@ impl Drop for ErrorModeGuard {
     }
 }
 
-fn with_get_last_error<T, F>(wrap: fn(crate::error::WindowsError) -> crate::Error, closure: F)
--> Result<T, Option<crate::Error>>
-where F: FnOnce() -> Option<T> {
+fn with_get_last_error<T, F>(
+    wrap: fn(crate::error::WindowsError) -> crate::Error,
+    closure: F,
+) -> Result<T, Option<crate::Error>>
+where
+    F: FnOnce() -> Option<T>,
+{
     closure().ok_or_else(|| {
         let error = unsafe { GetLastError() };
         if error == 0 {
             None
         } else {
-            Some(wrap(crate::error::WindowsError(io::Error::from_raw_os_error(error as i32))))
+            Some(wrap(crate::error::WindowsError(error as i32)))
         }
     })
 }
-
 
 #[allow(clippy::upper_case_acronyms)]
 type BOOL = i32;

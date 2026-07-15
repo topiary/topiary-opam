@@ -46,13 +46,17 @@ use crate::{
     identifier::{Ident, LocIdent},
     impl_display_from_pretty,
     label::Polarity,
+    metrics::increment,
     mk_app, mk_fun,
     position::TermPos,
+    pretty::PrettyPrintCap,
     stdlib::internals,
+    term::pattern::compile::Compile,
     term::{
         array::Array, make as mk_term, record::RecordData, string::NickelString, IndexMap,
-        MatchBranch, MatchData, RichTerm, Term, Traverse, TraverseControl, TraverseOrder,
+        MatchBranch, MatchData, RichTerm, Term,
     },
+    traverse::*,
 };
 
 use std::{collections::HashSet, convert::Infallible};
@@ -251,11 +255,12 @@ pub enum DictTypeFlavour {
 ///
 /// ## Type parameters
 ///
-/// Here, `TypeF` also takes two additional type parameters for the recursive unfolding of record
-/// rows and enum rows. We have other, distinct recursive subcomponents (or subtrees) in our
-/// complete definition, but the approach is unchanged.
-#[derive(Clone, PartialEq, Debug)]
-pub enum TypeF<Ty, RRows, ERows> {
+/// - `Ty`: the recursive unfolding of Nickel types
+/// - `RRows`: the recursive unfolding of record rows
+/// - `ERows`: the recursive unfolding of enum rows
+/// - `Te`: the type of a term (used to store contracts)
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum TypeF<Ty, RRows, ERows, Te> {
     /// The dynamic type, or unitype. Assigned to values whose actual type is not statically known
     /// or checked.
     Dyn,
@@ -272,7 +277,7 @@ pub enum TypeF<Ty, RRows, ERows> {
     /// The type of `Term::ForeignId`.
     ForeignId,
     /// A type created from a user-defined contract.
-    Flat(RichTerm),
+    Contract(Te),
     /// A function.
     Arrow(Ty, Ty),
     /// A type variable.
@@ -321,7 +326,7 @@ pub struct RecordRows(pub RecordRowsF<Box<Type>, Box<RecordRows>>);
 /// Concrete, recursive type for a Nickel type.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Type {
-    pub typ: TypeF<Box<Type>, RecordRows, EnumRows>,
+    pub typ: TypeF<Box<Type>, RecordRows, EnumRows, RichTerm>,
     pub pos: TermPos,
 }
 
@@ -509,7 +514,7 @@ impl<Ty, ERows> EnumRowsF<Ty, ERows> {
     }
 }
 
-impl<Ty, RRows, ERows> TypeF<Ty, RRows, ERows> {
+impl<Ty, RRows, ERows, Te> TypeF<Ty, RRows, ERows, Te> {
     /// Map functions over the children nodes of a type, when seen as a tree. The mutable state (
     /// `S`) is threaded through the calls to the mapped functions. Functions are fallible and may
     /// return an error `E`, which causes `try_map_state` to return early with the same error.
@@ -528,17 +533,19 @@ impl<Ty, RRows, ERows> TypeF<Ty, RRows, ERows> {
     ///
     /// Since `TypeF` may contain record rows and enum rows as well, `f_rrows` and `f_erows` are
     /// required to know how to map on record and enum types respectively.
-    pub fn try_map_state<TyO, RRowsO, ERowsO, FTy, FRRows, FERows, S, E>(
+    pub fn try_map_state<TyO, RRowsO, ERowsO, TeO, FTy, FRRows, FERows, FTe, S, E>(
         self,
         mut f: FTy,
         mut f_rrows: FRRows,
         mut f_erows: FERows,
+        mut f_ctr: FTe,
         state: &mut S,
-    ) -> Result<TypeF<TyO, RRowsO, ERowsO>, E>
+    ) -> Result<TypeF<TyO, RRowsO, ERowsO, TeO>, E>
     where
         FTy: FnMut(Ty, &mut S) -> Result<TyO, E>,
         FRRows: FnMut(RRows, &mut S) -> Result<RRowsO, E>,
         FERows: FnMut(ERows, &mut S) -> Result<ERowsO, E>,
+        FTe: FnMut(Te, &mut S) -> Result<TeO, E>,
     {
         match self {
             TypeF::Dyn => Ok(TypeF::Dyn),
@@ -547,7 +554,7 @@ impl<Ty, RRows, ERows> TypeF<Ty, RRows, ERows> {
             TypeF::String => Ok(TypeF::String),
             TypeF::ForeignId => Ok(TypeF::ForeignId),
             TypeF::Symbol => Ok(TypeF::Symbol),
-            TypeF::Flat(t) => Ok(TypeF::Flat(t)),
+            TypeF::Contract(t) => Ok(TypeF::Contract(f_ctr(t, state)?)),
             TypeF::Arrow(dom, codom) => Ok(TypeF::Arrow(f(dom, state)?, f(codom, state)?)),
             TypeF::Var(i) => Ok(TypeF::Var(i)),
             TypeF::Forall {
@@ -574,70 +581,102 @@ impl<Ty, RRows, ERows> TypeF<Ty, RRows, ERows> {
     }
 
     /// Variant of `try_map_state` without threaded state.
-    pub fn try_map<TyO, RRowsO, ERowsO, FTy, FRRows, FERows, E>(
+    pub fn try_map<TyO, RRowsO, ERowsO, TeO, FTy, FRRows, FERows, FTe, E>(
         self,
         mut f: FTy,
         mut f_rrows: FRRows,
         mut f_erows: FERows,
-    ) -> Result<TypeF<TyO, RRowsO, ERowsO>, E>
+        mut f_ctr: FTe,
+    ) -> Result<TypeF<TyO, RRowsO, ERowsO, TeO>, E>
     where
         FTy: FnMut(Ty) -> Result<TyO, E>,
         FRRows: FnMut(RRows) -> Result<RRowsO, E>,
         FERows: FnMut(ERows) -> Result<ERowsO, E>,
+        FTe: FnMut(Te) -> Result<TeO, E>,
     {
         let f_lifted = |ty: Ty, _: &mut ()| -> Result<TyO, E> { f(ty) };
         let f_rrows_lifted = |rrows: RRows, _: &mut ()| -> Result<RRowsO, E> { f_rrows(rrows) };
         let f_erows_lifted = |erows: ERows, _: &mut ()| -> Result<ERowsO, E> { f_erows(erows) };
+        let f_ctr_lifted = |ctr: Te, _: &mut ()| -> Result<TeO, E> { f_ctr(ctr) };
 
-        self.try_map_state(f_lifted, f_rrows_lifted, f_erows_lifted, &mut ())
+        self.try_map_state(
+            f_lifted,
+            f_rrows_lifted,
+            f_erows_lifted,
+            f_ctr_lifted,
+            &mut (),
+        )
     }
 
     /// Variant of `try_map_state` with infallible functions.
-    pub fn map_state<TyO, RRowsO, ERowsO, FTy, FRRows, FERows, S>(
+    pub fn map_state<TyO, RRowsO, ERowsO, TeO, FTy, FRRows, FERows, FTe, S>(
         self,
         mut f: FTy,
         mut f_rrows: FRRows,
         mut f_erows: FERows,
+        mut f_ctr: FTe,
         state: &mut S,
-    ) -> TypeF<TyO, RRowsO, ERowsO>
+    ) -> TypeF<TyO, RRowsO, ERowsO, TeO>
     where
         FTy: FnMut(Ty, &mut S) -> TyO,
         FRRows: FnMut(RRows, &mut S) -> RRowsO,
         FERows: FnMut(ERows, &mut S) -> ERowsO,
+        FTe: FnMut(Te, &mut S) -> TeO,
     {
-        let f_lifted = |ty: Ty, state: &mut S| -> Result<TyO, ()> { Ok(f(ty, state)) };
-        let f_rrows_lifted =
-            |rrows: RRows, state: &mut S| -> Result<RRowsO, ()> { Ok(f_rrows(rrows, state)) };
-        let f_erows_lifted =
-            |erows: ERows, state: &mut S| -> Result<ERowsO, ()> { Ok(f_erows(erows, state)) };
-        self.try_map_state(f_lifted, f_rrows_lifted, f_erows_lifted, state)
-            .unwrap()
+        let f_lifted = |ty: Ty, state: &mut S| -> Result<TyO, Infallible> { Ok(f(ty, state)) };
+        let f_rrows_lifted = |rrows: RRows, state: &mut S| -> Result<RRowsO, Infallible> {
+            Ok(f_rrows(rrows, state))
+        };
+        let f_erows_lifted = |erows: ERows, state: &mut S| -> Result<ERowsO, Infallible> {
+            Ok(f_erows(erows, state))
+        };
+        let f_ctr_lifted =
+            |ctr: Te, state: &mut S| -> Result<TeO, Infallible> { Ok(f_ctr(ctr, state)) };
+
+        self.try_map_state(
+            f_lifted,
+            f_rrows_lifted,
+            f_erows_lifted,
+            f_ctr_lifted,
+            state,
+        )
+        .unwrap()
     }
 
     /// Variant of `try_map_state` without threaded state and with infallible functions.
-    pub fn map<TyO, RRowsO, ERowsO, FTy, FRRows, FERows>(
+    pub fn map<TyO, RRowsO, ERowsO, TeO, FTy, FRRows, FERows, FTe>(
         self,
         mut f: FTy,
         mut f_rrows: FRRows,
         mut f_erows: FERows,
-    ) -> TypeF<TyO, RRowsO, ERowsO>
+        mut f_ctr: FTe,
+    ) -> TypeF<TyO, RRowsO, ERowsO, TeO>
     where
         FTy: FnMut(Ty) -> TyO,
         FRRows: FnMut(RRows) -> RRowsO,
         FERows: FnMut(ERows) -> ERowsO,
+        FTe: FnMut(Te) -> TeO,
     {
         let f_lifted = |ty: Ty, _: &mut ()| -> TyO { f(ty) };
         let f_rrows_lifted = |rrows: RRows, _: &mut ()| -> RRowsO { f_rrows(rrows) };
         let f_erows_lifted = |erows: ERows, _: &mut ()| -> ERowsO { f_erows(erows) };
-        self.map_state(f_lifted, f_rrows_lifted, f_erows_lifted, &mut ())
+        let f_ctr_lifted = |ctr: Te, _: &mut ()| -> TeO { f_ctr(ctr) };
+
+        self.map_state(
+            f_lifted,
+            f_rrows_lifted,
+            f_erows_lifted,
+            f_ctr_lifted,
+            &mut (),
+        )
     }
 
     pub fn is_wildcard(&self) -> bool {
         matches!(self, TypeF::Wildcard(_))
     }
 
-    pub fn is_flat(&self) -> bool {
-        matches!(self, TypeF::Flat(_))
+    pub fn is_contract(&self) -> bool {
+        matches!(self, TypeF::Contract(_))
     }
 }
 
@@ -673,6 +712,39 @@ impl Traverse<Type> for RecordRows {
     }
 }
 
+impl Traverse<Type> for EnumRows {
+    fn traverse<F, E>(self, f: &mut F, order: TraverseOrder) -> Result<EnumRows, E>
+    where
+        F: FnMut(Type) -> Result<Type, E>,
+    {
+        // traverse keeps track of state in the FnMut function. try_map_state
+        // keeps track of it in a separate state variable. we can pass the
+        // former into the latter by treating the function itself as the state
+        let rows = self.0.try_map_state(
+            |ty, f| Ok(Box::new(ty.traverse(f, order)?)),
+            |rrows, f| Ok(Box::new(rrows.traverse(f, order)?)),
+            f,
+        )?;
+
+        Ok(EnumRows(rows))
+    }
+
+    fn traverse_ref<S, U>(
+        &self,
+        f: &mut dyn FnMut(&Type, &S) -> TraverseControl<S, U>,
+        state: &S,
+    ) -> Option<U> {
+        match &self.0 {
+            EnumRowsF::Extend { row, tail } => row
+                .typ
+                .as_ref()
+                .and_then(|ty| ty.traverse_ref(f, state))
+                .or_else(|| tail.traverse_ref(f, state)),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct UnboundTypeVariableError(pub LocIdent);
 
@@ -686,7 +758,11 @@ impl From<UnboundTypeVariableError> for EvalError {
 
 impl From<UnboundTypeVariableError> for TypecheckError {
     fn from(err: UnboundTypeVariableError) -> Self {
-        TypecheckError::UnboundTypeVariable(err.0)
+        use crate::{bytecode::ast::alloc::AstAlloc, error::TypecheckErrorData};
+
+        TypecheckError::new(AstAlloc::new(), |_alloc| {
+            TypecheckErrorData::UnboundTypeVariable(err.0)
+        })
     }
 }
 
@@ -845,7 +921,16 @@ impl Subcontract for Type {
                 s.subcontract(vars.clone(), pol.flip(), sy)?,
                 t.subcontract(vars, pol, sy)?
             ),
-            TypeF::Flat(ref t) => t.clone(),
+            // Note that we do an early return here.
+            //
+            // All builtin contracts needs an additional wrapping as a `CustomContract`: they're
+            // written as a custom contract but they miss the `%contract/custom%` (mostly because
+            // it's nicer to do it just once at the end than littering the internals module with
+            // `%contract/custom%` applications).
+            //
+            // However, in the case of a contract embedded in a type, we don't want to do the
+            // additional wrapping, as `t` should already be a fully constructed contract.
+            TypeF::Contract(ref t) => return Ok(t.clone()),
             TypeF::Var(id) => get_var_contract(&vars, id, self.pos)?,
             TypeF::Forall {
                 ref var,
@@ -916,7 +1001,7 @@ impl Subcontract for Type {
             TypeF::Wildcard(_) => internals::dynamic(),
         };
 
-        Ok(ctr)
+        Ok(mk_term::custom_contract(ctr))
     }
 }
 
@@ -937,6 +1022,75 @@ impl EnumRows {
         EnumRowsIterator {
             erows: Some(self),
             ty: std::marker::PhantomData,
+        }
+    }
+
+    /// Simplify enum rows for contract generation when the rows are part of a static type
+    /// annotation. See [Type::contract_static].
+    ///
+    /// The following simplification are applied:
+    ///
+    /// - the type of the argument of each enum variant is simplified as well
+    /// - if the polarity is positive and the rows are composed entirely of enum tags and enum
+    ///   variants whose argument's simplified type is `Dyn`, the entire rows are elided by returning
+    ///   `None`
+    /// - a tail variable in tail position is currently left unchanged, because it doesn't give
+    ///   rise to any sealing at runtime currently (see documentation of `$forall_enum_tail` in the
+    ///   internals module of the stdlib)
+    fn simplify(
+        self,
+        contract_env: &mut Environment<Ident, RichTerm>,
+        simplify_vars: SimplifyVars,
+        polarity: Polarity,
+    ) -> Option<Self> {
+        // Actual simplification logic. We can elide the initial enum row type if **each**
+        // individual row can be elided and this enum has an empty tail. Thus, when making
+        // recursive calls, we can't just return `None` when some subrows can be elided, as we
+        // might still need them. Instead, `do_simplify` returns a tuple of the simplified rows and
+        // a boolean indicating if this part can be elided.
+        fn do_simplify(
+            rows: EnumRows,
+            contract_env: &mut Environment<Ident, RichTerm>,
+            simplify_vars: SimplifyVars,
+            polarity: Polarity,
+        ) -> (EnumRows, bool) {
+            match rows {
+                EnumRows(EnumRowsF::Empty) => (EnumRows(EnumRowsF::Empty), true),
+                // Currently, we could actually return `true` here, because the tail contract for
+                // enums doesn't do anything (see documentation of `$forall_enum_tail` in the
+                // `internals` module of the stdlib). However, if we ever fix this shortcoming of
+                // enum tail contracts and actually enforce parametricity, returning `true` would
+                // become incorrect. So let's be future proof.
+                EnumRows(EnumRowsF::TailVar(id)) => (EnumRows(EnumRowsF::TailVar(id)), false),
+                EnumRows(EnumRowsF::Extend { row, tail }) => {
+                    let (tail, mut elide) =
+                        do_simplify(*tail, contract_env, simplify_vars.clone(), polarity);
+
+                    let typ = row.typ.map(|mut typ| {
+                        *typ = typ.simplify(contract_env, simplify_vars, polarity);
+                        elide = elide && matches!(typ.typ, TypeF::Dyn);
+                        typ
+                    });
+
+                    let row = EnumRowF { id: row.id, typ };
+
+                    (
+                        EnumRows(EnumRowsF::Extend {
+                            row,
+                            tail: Box::new(tail),
+                        }),
+                        elide,
+                    )
+                }
+            }
+        }
+
+        let (result, elide) = do_simplify(self, contract_env, simplify_vars, polarity);
+
+        if matches!((elide, polarity), (true, Polarity::Positive)) {
+            None
+        } else {
+            Some(result)
         }
     }
 }
@@ -976,11 +1130,11 @@ impl Subcontract for EnumRows {
         // For example, for an enum type [| 'foo, 'bar, 'Baz T |], the function looks like:
         //
         // ```
-        // fun l x =>
-        //   x |> match {
-        //     'foo => x,
-        //     'bar => x,
-        //     'Baz variant_arg => 'Baz (%apply_contract% T label_arg variant_arg),
+        // fun label value =>
+        //   value |> match {
+        //     'foo => 'Ok x,
+        //     'bar => 'Ok x,
+        //     'Baz variant_arg => 'Ok ('Baz (%apply_contract% T label_arg variant_arg)),
         //     _ => $enum_fail l
         //   }
         // ```
@@ -1006,15 +1160,12 @@ impl Subcontract for EnumRows {
                             mk_term::var(variant_arg)
                         );
 
-                        Term::EnumVariant {
-                            tag: row.id,
-                            arg,
-                            attrs: Default::default(),
-                        }
-                        .into()
+                        mk_term::enum_variant(row.id, arg)
                     } else {
                         mk_term::var(value_arg)
                     };
+
+                    let body = mk_term::enum_variant("Ok", body);
 
                     let pattern = Pattern {
                         data: PatternData::Enum(EnumPattern {
@@ -1067,7 +1218,9 @@ impl Subcontract for EnumRows {
             body: default,
         });
 
-        let match_expr = mk_app!(Term::Match(MatchData { branches }), mk_term::var(value_arg));
+        // We pre-compile the match expression, so that it's not compiled again and again at each
+        // application of the contract.
+        let match_expr = MatchData { branches }.compile(mk_term::var(value_arg), TermPos::None);
 
         let case = mk_fun!(label_arg, value_arg, match_expr);
         Ok(mk_app!(internals::enumeration(), case))
@@ -1130,6 +1283,233 @@ impl RecordRows {
             ty: std::marker::PhantomData,
         }
     }
+
+    /// Simplify record rows for contract generation when the rows are part of a static type
+    /// annotation. See [Type::contract_static].
+    ///
+    /// The following simplifications are applied:
+    ///
+    /// - the type of each field is simplified
+    /// - if the polarity is positive and the tail is known to be simplified to `Dyn`, any field
+    ///   whose simplified type is `Dyn` is entirely elided from the final result. That is, `{foo :
+    ///   Number, bar : Number -> Number}` in positive position is simplified to `{bar : Number ->
+    ///   Dyn; Dyn}`. `{foo : Number, bar : Dyn}` is simplified to `{; Dyn}` which is simplified
+    ///   further to `Dyn` by [Type::simplify].
+    ///
+    ///   We can't do that when the tail can't be simplified to `Dyn` (this is the case when the
+    ///   tail variable has been introduced by a forall in negative position).
+    /// - The case of a tail variable is a bit more complex and is detailed below.
+    ///
+    /// # Simplification of tail variable
+    ///
+    /// The following paragraphs distinguish between a tail variable (and thus an enclosing record
+    /// type) in positive position and a tail variable in negative position (the polarity of the
+    /// introducing forall is yet another dimension, covered in each paragraph).
+    ///
+    /// ## Negative polarity
+    ///
+    /// The simplification of record row variables is made harder by the presence of excluded
+    /// fields. It's tempting to replace all `r` in tail position by `Dyn` if the introducing
+    /// `forall r` was in positive position, as we do for regular type variables, but it's
+    /// unfortunately not sound. For example:
+    ///
+    /// ```nickel
+    /// inject_meta: forall r. {; r} -> {meta : String; r}
+    /// ```
+    ///
+    /// In this case, the `forall r` is in positive position, but the `r` in `{; r}` in negative
+    /// position can't be entirely elided, because it checks that `meta` isn't already present in
+    /// the original argument. In particular, the original contract rejects `inject_meta {meta =
+    /// "hello"}`, but blindly simplifying the type of `inject_meta` to `{; Dyn} -> {; Dyn}`
+    /// would allow this argument.
+    ///
+    /// We can simplify it to something like `{; $forall_record_tail_excluded_only ["meta"]} -> {;
+    /// Dyn}` (further simplified to `{; $forall_record_tail_excluded_only ["meta"]} -> Dyn` by
+    /// `Type::simplify`). `$forall_record_tail_excluded_only` is a specialized version of the
+    /// record tail contract `$forall_record_tail$ which doesn't seal but still check for the
+    /// absence of excluded fields.
+    ///
+    /// Note that we can't actually put an arbitrary contract in the tail of a record type. This is
+    /// why the `simplify()` methods take a mutable reference to an environment `contract_env`
+    /// which will be passed to the contract generation methods. What we do in practice is to bind
+    /// a fresh record row variable to `$forall_record_tail_excluded_only ["meta"]` in this
+    /// environment and we substitute the tail var for this fresh variable.
+    ///
+    /// On the other hand, in
+    ///
+    /// ```nickel
+    /// update_meta: forall r. {meta : String; r} -> {meta : String; r}
+    /// ```
+    ///
+    /// The contract can be simplified to `{meta : String; Dyn} -> Dyn`. To detect this case, we
+    /// record the set of fields that are present in the current rows and check if this set is
+    /// equal to the excluded fields for this row variable (it's always a subset of the excluded
+    /// fields by definition of row constraints), or if there are some excluded fields left to
+    /// check.
+    ///
+    /// ## Positive polarity
+    ///
+    /// In a positive position, we can replace the tail with `Dyn` if the tail isn't a variable
+    /// introduced in negative position, because a typed term can never violate row constraints.
+    ///
+    /// For a variable introduced by a forall in negative position, we need to keep the unsealing
+    /// operation to make sure the corresponding forall type doesn't blame. But the unsealing
+    /// operation needs prior sealing to work out, so we need to keep the tail even for record
+    /// types in positive position. What's more, _we can't elide any field in this case_. Indeed,
+    /// eliding fields can change what goes in the tail, and can only be done when the tail is
+    /// ensured to be `Dyn`.
+    fn simplify(
+        self,
+        contract_env: &mut Environment<Ident, RichTerm>,
+        simplify_vars: SimplifyVars,
+        polarity: Polarity,
+    ) -> Self {
+        // This helper does a first traversal of record rows in order to peek the tail and check if
+        // it's a variable introduced by a forall in negative position. In this case, the second
+        // component of the result will be `false` and we can't elide any field during the actual
+        // simplification.
+        //
+        // As we will need the set of all fields later, we build during this first traversal as well.
+        fn peek_tail(rrows: &RecordRows, simplify_vars: &SimplifyVars) -> (HashSet<Ident>, bool) {
+            let mut fields = HashSet::new();
+            let mut can_elide = true;
+
+            for row in rrows.iter() {
+                match row {
+                    RecordRowsIteratorItem::Row(row) => {
+                        fields.insert(row.id.ident());
+                    }
+                    RecordRowsIteratorItem::TailVar(id)
+                        if simplify_vars.rrows_vars_elide.get(&id.ident()).is_none() =>
+                    {
+                        can_elide = false;
+                    }
+                    _ => {}
+                }
+            }
+
+            (fields, can_elide)
+        }
+
+        // Actual simplification logic, which additionally remembers if a field has been elided and
+        // if we thus need to change the tail to `Dyn` to account for the elision.
+        fn do_simplify(
+            rrows: RecordRows,
+            contract_env: &mut Environment<Ident, RichTerm>,
+            simplify_vars: SimplifyVars,
+            polarity: Polarity,
+            fields: &HashSet<Ident>,
+            can_elide: bool,
+        ) -> RecordRows {
+            let rrows = match rrows.0 {
+                // Because we may have elided some fields, we always make this record type open
+                // when in positive position, which never hurts
+                RecordRowsF::Empty if matches!(polarity, Polarity::Positive) => {
+                    RecordRowsF::TailDyn
+                }
+                RecordRowsF::Empty => RecordRowsF::Empty,
+                RecordRowsF::Extend { row, tail } => {
+                    let typ_simplified =
+                        row.typ
+                            .simplify(contract_env, simplify_vars.clone(), polarity);
+                    // If we are in a positive position, the simplified type of the field is `Dyn`,
+                    // and we can elide fields given the current tail of these rows, we get rid of
+                    // the whole field.
+                    let elide_field = matches!(
+                        (&typ_simplified.typ, polarity),
+                        (TypeF::Dyn, Polarity::Positive)
+                    ) && can_elide;
+
+                    let row = RecordRow {
+                        id: row.id,
+                        typ: Box::new(typ_simplified),
+                    };
+
+                    let tail = Box::new(do_simplify(
+                        *tail,
+                        contract_env,
+                        simplify_vars,
+                        polarity,
+                        fields,
+                        can_elide,
+                    ));
+
+                    if elide_field {
+                        tail.0
+                    } else {
+                        RecordRowsF::Extend { row, tail }
+                    }
+                }
+                RecordRowsF::TailDyn => RecordRowsF::TailDyn,
+                RecordRowsF::TailVar(id) => {
+                    let excluded = simplify_vars.rrows_vars_elide.get(&id.ident());
+
+                    match (excluded, polarity) {
+                        // If the variable was introduced in positive position, it won't cause any
+                        // (un)sealing. So if we are in positive position as well, we can just get
+                        // rid of the tail
+                        (Some(_), Polarity::Positive) => RecordRowsF::TailDyn,
+                        // If the variable was introduced in negative position, we can't elide the
+                        // unsealing contracts which are in negative position as well, and thus
+                        // neither elide the corresponding sealing contract.
+                        (None, Polarity::Positive | Polarity::Negative) => RecordRowsF::TailVar(id),
+                        // If the variable was introduced by a forall in positive position and we
+                        // are in a negative position, we can do some simplifying and at least get
+                        // rid of the sealing operation, and sometimes of the whole tail contract.
+                        (Some(excluded), Polarity::Negative) => {
+                            // We don't have to check for the absence of fields that appear in this row
+                            // type
+                            let excluded = excluded - fields;
+
+                            // If all the excluded fields are listed in the record type, the
+                            // contract will never blame on the presence of an excluded field, so
+                            // we can get rid of the tail altogether
+                            if excluded.is_empty() {
+                                RecordRowsF::TailDyn
+                            }
+                            // Otherwise, we need to check for the absence of the remaining excluded
+                            // fields with a specialized tail contract which doesn't seal the tail.
+                            else {
+                                let fresh_var = LocIdent::fresh();
+
+                                let excluded_ncl: RichTerm = Term::Array(
+                                    Array::from_iter(
+                                        excluded
+                                            .iter()
+                                            .map(|id| Term::Str(NickelString::from(*id)).into()),
+                                    ),
+                                    Default::default(),
+                                )
+                                .into();
+
+                                contract_env.insert(
+                                    fresh_var.ident(),
+                                    mk_app!(
+                                        internals::forall_record_tail_excluded_only(),
+                                        excluded_ncl
+                                    ),
+                                );
+
+                                RecordRowsF::TailVar(fresh_var)
+                            }
+                        }
+                    }
+                }
+            };
+
+            RecordRows(rrows)
+        }
+
+        let (fields, can_elide) = peek_tail(&self, &simplify_vars);
+        do_simplify(
+            self,
+            contract_env,
+            simplify_vars,
+            polarity,
+            &fields,
+            can_elide,
+        )
+    }
 }
 
 impl Subcontract for RecordRows {
@@ -1153,6 +1533,7 @@ impl Subcontract for RecordRows {
             rrows = tail
         }
 
+        let has_tail = !matches!(&rrows.0, RecordRowsF::Empty);
         // Now that we've dealt with the row extends, we just need to
         // work out the tail.
         let tail = match &rrows.0 {
@@ -1165,12 +1546,17 @@ impl Subcontract for RecordRows {
 
         let rec = RichTerm::from(Term::Record(RecordData::with_field_values(fcs)));
 
-        Ok(mk_app!(internals::record(), rec, tail))
+        Ok(mk_app!(
+            internals::record_type(),
+            rec,
+            tail,
+            Term::Bool(has_tail)
+        ))
     }
 }
 
-impl From<TypeF<Box<Type>, RecordRows, EnumRows>> for Type {
-    fn from(typ: TypeF<Box<Type>, RecordRows, EnumRows>) -> Self {
+impl From<TypeF<Box<Type>, RecordRows, EnumRows, RichTerm>> for Type {
+    fn from(typ: TypeF<Box<Type>, RecordRows, EnumRows, RichTerm>) -> Self {
         Type {
             typ,
             pos: TermPos::None,
@@ -1211,122 +1597,30 @@ impl Type {
         .unwrap()
     }
 
-    /// Static typing guarantees make some of the contract checks useless, assuming that blame
-    /// safety holds. This function simplifies `self` for contract generation, assuming it is part
-    /// of a static type annotation, by eliding some of these useless subcontracts.
-    ///
-    /// # Simplifications
-    ///
-    /// - `forall`s in positive positions are removed, and the corresponding type variable is
-    ///   substituted for a `Dyn` contract. In consequence, [Self::contract()] will generate
-    ///   optimized contracts as well (for example, `forall a. Array a -> a` becomes `Array Dyn ->
-    ///   Dyn`, where `Array Dyn` will be translated to `$array_dyn` which has a constant-time
-    ///   overhead while `Array a` is linear in the size of the array.
-    /// - All positive occurrences of first order contracts (that is, anything but a function type)
-    /// are turned to `Dyn` contracts.
-    fn optimize_static(self) -> Self {
-        // We use this environment as a shareable HashSet
-        type VarsHashSet = Environment<Ident, ()>;
-
-        trait Optimize {
-            fn optimize(self, vars_elide: VarsHashSet, polarity: Polarity) -> Self;
-        }
-
-        impl Optimize for Type {
-            fn optimize(self, mut vars_elide: VarsHashSet, polarity: Polarity) -> Type {
-                let mut pos = self.pos;
-
-                let optimized = match self.typ {
-                    TypeF::Arrow(dom, codom) => TypeF::Arrow(
-                        Box::new(dom.optimize(vars_elide.clone(), polarity.flip())),
-                        Box::new(codom.optimize(vars_elide, polarity)),
-                    ),
-                    // TODO: don't optimize only VarKind::Type
-                    TypeF::Forall {
-                        var,
-                        var_kind: VarKind::Type,
-                        body,
-                    } if polarity == Polarity::Positive => {
-                        vars_elide.insert(var.ident(), ());
-                        let result = body.optimize(vars_elide, polarity);
-                        // we keep the position of the body, not the one of the forall
-                        pos = result.pos;
-                        result.typ
-                    }
-                    TypeF::Forall {
-                        var,
-                        var_kind,
-                        body,
-                    } => TypeF::Forall {
-                        var,
-                        var_kind,
-                        body: Box::new(body.optimize(vars_elide, polarity)),
-                    },
-                    TypeF::Var(id) if vars_elide.get(&id).is_some() => TypeF::Dyn,
-                    v @ TypeF::Var(_) => v,
-                    // Any first-order type on positive position can be elided
-                    _ if matches!(polarity, Polarity::Positive) => TypeF::Dyn,
-                    // Otherwise, we still recurse into non-primitive types
-                    TypeF::Record(rrows) => TypeF::Record(rrows.optimize(vars_elide, polarity)),
-                    TypeF::Enum(erows) => TypeF::Enum(erows.optimize(vars_elide, polarity)),
-                    TypeF::Dict {
-                        type_fields,
-                        flavour,
-                    } => TypeF::Dict {
-                        type_fields: Box::new(type_fields.optimize(vars_elide, polarity)),
-                        flavour,
-                    },
-                    TypeF::Array(t) => TypeF::Array(Box::new(t.optimize(vars_elide, polarity))),
-                    // All other types don't contain subtypes, it's a base case
-                    t => t,
-                };
-                Type {
-                    typ: optimized,
-                    pos,
-                }
-            }
-        }
-
-        impl Optimize for RecordRows {
-            fn optimize(self, vars_elide: VarsHashSet, polarity: Polarity) -> RecordRows {
-                RecordRows(self.0.map(
-                    |typ| Box::new(typ.optimize(vars_elide.clone(), polarity)),
-                    |rrows| Box::new(rrows.optimize(vars_elide.clone(), polarity)),
-                ))
-            }
-        }
-
-        impl Optimize for EnumRows {
-            fn optimize(self, vars_elide: VarsHashSet, polarity: Polarity) -> EnumRows {
-                EnumRows(self.0.map(
-                    |typ| Box::new(typ.optimize(vars_elide.clone(), polarity)),
-                    |erows| Box::new(erows.optimize(vars_elide.clone(), polarity)),
-                ))
-            }
-        }
-
-        self.optimize(VarsHashSet::new(), Polarity::Positive)
-    }
-
-    /// Return the contract corresponding to a type which appears in a static type annotation. Said
-    /// contract must then be applied using the `ApplyContract` primitive operation.
-    ///
-    /// [Self::contract_static] uses the fact that the checked term has been typechecked to
-    /// optimize the generated contract.
+    /// Variant of [Self::contract] that returns the contract corresponding to a type which appears
+    /// in a static type annotation. [Self::contract_static] uses the fact that the checked term
+    /// has been typechecked to optimize the generated contract thanks to the guarantee of static
+    /// typing.
     pub fn contract_static(self) -> Result<RichTerm, UnboundTypeVariableError> {
         let mut sy = 0;
-        self.optimize_static()
-            .subcontract(Environment::new(), Polarity::Positive, &mut sy)
+        let mut contract_env = Environment::new();
+
+        self.simplify(&mut contract_env, SimplifyVars::new(), Polarity::Positive)
+            .subcontract(contract_env, Polarity::Positive, &mut sy)
     }
 
-    /// Return the contract corresponding to a type, either as a function or a record. Said
-    /// contract must then be applied using the `ApplyContract` primitive operation.
+    /// Return the contract corresponding to a type. Said contract must then be applied using the
+    /// `ApplyContract` primitive operation.
     pub fn contract(&self) -> Result<RichTerm, UnboundTypeVariableError> {
+        increment!(format!("gen_contract:{}", self.pretty_print_cap(40)));
+
         let mut sy = 0;
+
         self.subcontract(Environment::new(), Polarity::Positive, &mut sy)
     }
 
-    /// Returns true if this type is a function type, false otherwise.
+    /// Returns true if this type is a function type (including a polymorphic one), false
+    /// otherwise.
     pub fn is_function_type(&self) -> bool {
         match &self.typ {
             TypeF::Forall { body, .. } => body.is_function_type(),
@@ -1347,17 +1641,174 @@ impl Type {
             | TypeF::Var(_)
             | TypeF::Record(_)
             | TypeF::Enum(_) => true,
-            TypeF::Flat(rt) if rt.as_ref().is_atom() => true,
+            TypeF::Contract(rt) if rt.as_ref().is_atom() => true,
             _ => false,
         }
     }
 
-    /// Searches for a `TypeF::Flat`. If one is found, returns the term it contains.
-    pub fn find_flat(&self) -> Option<RichTerm> {
+    /// Searches for a `TypeF::Contract`. If one is found, returns the term it contains.
+    pub fn find_contract(&self) -> Option<RichTerm> {
         self.find_map(|ty: &Type| match &ty.typ {
-            TypeF::Flat(f) => Some(f.clone()),
+            TypeF::Contract(f) => Some(f.clone()),
             _ => None,
         })
+    }
+
+    /// Static typing guarantees make some of the contract checks useless, assuming that blame
+    /// safety holds. This function simplifies `self` for contract generation, assuming it is part
+    /// of a static type annotation, by eliding some of these useless subcontracts.
+    ///
+    /// # Simplifications
+    ///
+    /// - `forall`s of a type variable in positive positions are removed, and the corresponding type
+    ///   variable is substituted for a `Dyn` contract. In consequence, [Self::contract()] will generate
+    ///   simplified contracts as well. For example, `forall a. Array a -> a` becomes `Array Dyn -> Dyn`,
+    ///   and `Array Dyn` will then be specialized to `$array_dyn` which has a constant-time overhead
+    ///   (while `Array a` is linear in the size of the array). The final contract will just check that
+    ///   the argument is an array.
+    /// - `forall`s of a row variable (either record or enum) are removed as well. The substitution of
+    ///   the corresponding row variable is a bit more complex than in the type variable case and depends
+    ///   on the situation. See [RecordRows::simplify] and [EnumRows::simplify] for more details.
+    /// - `forall`s in negative position are left unchanged.
+    /// - All positive occurrences of type constructors that aren't a function type are recursively
+    ///   simplified. If they are simplified to a trivial type, such as `{; Dyn}` for a record or `Array
+    ///   Dyn` for an array, they are further simplified to `Dyn`.
+    ///   are turned to `Dyn` contracts. However, we must be careful here: type constructors might
+    ///   have function types somewhere inside, as in `{foo : Number, bar : Array (String ->
+    ///   String) }`. In this case, we can elide `foo`, but not `bar`.
+    fn simplify(
+        self,
+        contract_env: &mut Environment<Ident, RichTerm>,
+        mut simplify_vars: SimplifyVars,
+        polarity: Polarity,
+    ) -> Self {
+        let mut pos = self.pos;
+
+        let simplified = match self.typ {
+            TypeF::Arrow(dom, codom) => TypeF::Arrow(
+                Box::new(dom.simplify(contract_env, simplify_vars.clone(), polarity.flip())),
+                Box::new(codom.simplify(contract_env, simplify_vars, polarity)),
+            ),
+            TypeF::Forall {
+                var,
+                var_kind: VarKind::Type,
+                body,
+            } if polarity == Polarity::Positive => {
+                // The case of type variables is the simplest: we just replace all of them by
+                // `Dyn`. We don't bother messing with the contract environment and only register
+                // them in `simplify_vars`. Subsequent calls to `simplify` will check the register
+                // and replace the variable by `Dyn` when appropriate.
+                simplify_vars.type_vars_elide.insert(var.ident(), ());
+
+                let result = body.simplify(contract_env, simplify_vars, polarity);
+                // we keep the position of the body, not the one of the forall
+                pos = result.pos;
+                result.typ
+            }
+            TypeF::Forall {
+                var,
+                var_kind: VarKind::RecordRows { excluded },
+                body,
+            } if polarity == Polarity::Positive => {
+                simplify_vars.rrows_vars_elide.insert(var.ident(), excluded);
+
+                let result = body.simplify(contract_env, simplify_vars, polarity);
+                // we keep the position of the body, not the one of the forall
+                pos = result.pos;
+                result.typ
+            }
+            // For enum rows in negative position, we don't any simplification for now because
+            // parametricity isn't enforced. Polymorphic enum row contracts are mostly doing
+            // nothing, and it's fine to keep them as they are. See the documentation of
+            // `$forall_enum_tail` for more details. Even if we do enforce parametricity in the
+            // future, we will be missing an optimization opportunity here but we won't introduce
+            // any unsoundness.
+            //
+            // We don't elide foralls in negative position either.
+            //
+            // In both cases, we still simplify the body of the forall.
+            TypeF::Forall {
+                var,
+                var_kind,
+                body,
+            } => TypeF::Forall {
+                var,
+                var_kind,
+                body: Box::new(body.simplify(contract_env, simplify_vars, polarity)),
+            },
+            TypeF::Var(id) if simplify_vars.type_vars_elide.get(&id).is_some() => TypeF::Dyn,
+            // Any ground type in positive position can be entirely elided
+            TypeF::Number | TypeF::String | TypeF::Bool | TypeF::Symbol | TypeF::ForeignId
+                if matches!(polarity, Polarity::Positive) =>
+            {
+                TypeF::Dyn
+            }
+            // We need to recurse into type constructors, which could contain arrow types inside.
+            TypeF::Record(rrows) => {
+                let rrows_simplified = rrows.simplify(contract_env, simplify_vars, polarity);
+
+                // [^simplify-type-constructor-positive]: if we are in positive position, and the
+                // record type is entirely elided (which means simplified to `{; Dyn}`) or is
+                // empty, we can simplify it further to `Dyn`. This works for other type
+                // constructors as well (arrays, dictionaries, etc.): if there's no negative type
+                // or polymorphic tail somewhere inside, we can get rid of the whole thing.
+                if matches!(
+                    (&rrows_simplified, polarity),
+                    (
+                        RecordRows(RecordRowsF::TailDyn) | RecordRows(RecordRowsF::Empty),
+                        Polarity::Positive
+                    )
+                ) {
+                    TypeF::Dyn
+                } else {
+                    TypeF::Record(rrows_simplified)
+                }
+            }
+            TypeF::Enum(erows) => {
+                let erows = erows.simplify(contract_env, simplify_vars, polarity);
+
+                // See [^simplify-type-constructor-positive]
+                erows.map(TypeF::Enum).unwrap_or(TypeF::Dyn)
+            }
+            TypeF::Dict {
+                type_fields,
+                flavour,
+            } => {
+                let type_fields =
+                    Box::new(type_fields.simplify(contract_env, simplify_vars, polarity));
+
+                // See [^simplify-type-constructor-positive]
+                if matches!(
+                    (&type_fields.typ, polarity),
+                    (TypeF::Dyn, Polarity::Positive)
+                ) {
+                    TypeF::Dyn
+                } else {
+                    TypeF::Dict {
+                        type_fields,
+                        flavour,
+                    }
+                }
+            }
+            TypeF::Array(t) => {
+                let type_elts = t.simplify(contract_env, simplify_vars, polarity);
+
+                // See [^simplify-type-constructor-positive]
+                if matches!((&type_elts.typ, polarity), (TypeF::Dyn, Polarity::Positive)) {
+                    TypeF::Dyn
+                } else {
+                    TypeF::Array(Box::new(type_elts))
+                }
+            }
+            // All the remaining cases are ground types that don't contain subtypes, or they are
+            // type variables that can't be elided. We leave them unchanged
+            t => t,
+        };
+
+        Type {
+            typ: simplified,
+            pos,
+        }
     }
 }
 
@@ -1377,7 +1828,8 @@ impl Traverse<Type> for Type {
         let typ = pre_map.typ.try_map_state(
             |ty, f| Ok(Box::new(ty.traverse(f, order)?)),
             |rrows, f| rrows.traverse(f, order),
-            |erows, _| Ok(erows),
+            |erows, f| erows.traverse(f, order),
+            |ctr, _| Ok(ctr),
             f,
         )?;
 
@@ -1414,9 +1866,8 @@ impl Traverse<Type> for Type {
             | TypeF::ForeignId
             | TypeF::Symbol
             | TypeF::Var(_)
-            | TypeF::Enum(_)
             | TypeF::Wildcard(_) => None,
-            TypeF::Flat(rt) => rt.traverse_ref(f, state),
+            TypeF::Contract(rt) => rt.traverse_ref(f, state),
             TypeF::Arrow(t1, t2) => t1
                 .traverse_ref(f, state)
                 .or_else(|| t2.traverse_ref(f, state)),
@@ -1424,6 +1875,7 @@ impl Traverse<Type> for Type {
             | TypeF::Dict { type_fields: t, .. }
             | TypeF::Array(t) => t.traverse_ref(f, state),
             TypeF::Record(rrows) => rrows.traverse_ref(f, state),
+            TypeF::Enum(erows) => erows.traverse_ref(f, state),
         }
     }
 }
@@ -1435,9 +1887,9 @@ impl Traverse<RichTerm> for Type {
     {
         self.traverse(
             &mut |ty: Type| match ty.typ {
-                TypeF::Flat(t) => t
+                TypeF::Contract(t) => t
                     .traverse(f, order)
-                    .map(|t| Type::from(TypeF::Flat(t)).with_pos(ty.pos)),
+                    .map(|t| Type::from(TypeF::Contract(t)).with_pos(ty.pos)),
                 _ => Ok(ty),
             },
             order,
@@ -1451,7 +1903,7 @@ impl Traverse<RichTerm> for Type {
     ) -> Option<U> {
         self.traverse_ref(
             &mut |ty: &Type, s: &S| match &ty.typ {
-                TypeF::Flat(t) => {
+                TypeF::Contract(t) => {
                     if let Some(ret) = t.traverse_ref(f, s) {
                         TraverseControl::Return(ret)
                     } else {
@@ -1465,8 +1917,134 @@ impl Traverse<RichTerm> for Type {
     }
 }
 
+/// Some context storing various type variables that can be simplified during static contract
+/// simplification (see the various `simplify()` methods).
+#[derive(Clone, Debug, Default)]
+struct SimplifyVars {
+    /// Environment used as a persistent HashSet to record type variables that can be elided
+    /// (replaced by `Dyn`) because they were introduced by a forall in positive position.
+    type_vars_elide: Environment<Ident, ()>,
+    /// Record record rows variables that were introduced by a forall in positive position and
+    /// their corresponding `excluded` field. They will be substituted for different simplified
+    /// contracts depending on where the variable appears and the surrounding record.
+    rrows_vars_elide: Environment<Ident, HashSet<Ident>>,
+}
+
+impl SimplifyVars {
+    fn new() -> Self {
+        Self::default()
+    }
+}
+
 impl_display_from_pretty!(Type);
 impl_display_from_pretty!(EnumRow);
 impl_display_from_pretty!(EnumRows);
 impl_display_from_pretty!(RecordRow);
 impl_display_from_pretty!(RecordRows);
+
+impl PrettyPrintCap for Type {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::{grammar::FixedTypeParser, lexer::Lexer, ErrorTolerantParserCompat};
+
+    /// Parse a type represented as a string.
+    fn parse_type(s: &str) -> Type {
+        use crate::files::Files;
+        let id = Files::new().add("<test>", s);
+
+        FixedTypeParser::new()
+            .parse_strict_compat(id, Lexer::new(s))
+            .unwrap()
+    }
+
+    /// Parse a type, simplify it and assert that the result corresponds to the second argument
+    /// (which is parsed and printed again to eliminate formatting differences). This function also
+    /// checks that the contract generation from the simplified version works without an unbound
+    /// type variable error.
+    #[track_caller]
+    fn assert_simplifies_to(orig: &str, target: &str) {
+        let parsed = parse_type(orig);
+
+        parsed.clone().contract_static().unwrap();
+
+        let simplified = parsed.simplify(
+            &mut Environment::new(),
+            SimplifyVars::new(),
+            Polarity::Positive,
+        );
+        let target_typ = parse_type(target);
+
+        assert_eq!(format!("{simplified}"), format!("{target_typ}"));
+    }
+
+    #[test]
+    fn simplify() {
+        assert_simplifies_to("forall a. a -> (a -> a) -> a", "Dyn -> (Dyn -> Dyn) -> Dyn");
+        assert_simplifies_to(
+            "forall b. (forall a. a -> a) -> b",
+            "(forall a. a -> a) -> Dyn",
+        );
+
+        // Big but entirely positive type
+        assert_simplifies_to(
+            "{foo : Array {bar : String, baz : Number}, qux: [| 'Foo, 'Bar, 'Baz Dyn |], pweep: {single : Array Bool}}",
+            "Dyn"
+        );
+        // Mixed type with arrows inside the return value
+        assert_simplifies_to(
+            "Array Number -> Array {foo : Number,  bar : String -> String}",
+            "Array Number -> Array {bar: String -> Dyn; Dyn}",
+        );
+        // Enum with arrows inside
+        assert_simplifies_to(
+            "{single : Array [| 'Foo, 'Bar, 'Baz (Dyn -> Dyn) |] }",
+            "{single : Array [| 'Foo, 'Bar, 'Baz (Dyn -> Dyn) |]; Dyn}",
+        );
+
+        // Polymorphic rows, case without excluded fields to check
+        assert_simplifies_to(
+            "forall r. {meta : String, doc : String; r} -> {meta : String; r}",
+            "{meta : String, doc : String; Dyn} -> Dyn",
+        );
+        // Polymorphic rows in negative position should prevent row elision in positive position
+        assert_simplifies_to(
+            "(forall r. {meta : String, count: Number; r} -> {; r}) -> {meta : String, count: Number}",
+            "(forall r. {meta : Dyn, count : Dyn; r} -> {; r}) -> Dyn",
+        );
+    }
+
+    #[test]
+    fn simplify_dont_elide_record() {
+        use regex::Regex;
+        // The simplified version of the type should contain a generated variable here. We can't
+        // represent a generated variable in normal Nickel syntax, so instead of parsing the
+        // expected result and print it again to eliminate formatting details as in
+        // `assert_simplifies_to`, we will print the simplified version and do a direct string
+        // comparison on the result.
+        let orig = "forall r. {x: Number, y: String; r} -> {z: Array Bool; r}";
+
+        let mut contract_env = Environment::new();
+        let simplified = parse_type(orig)
+            .simplify(&mut contract_env, SimplifyVars::new(), Polarity::Positive)
+            .to_string();
+
+        // Note: because we match on strings directly, we must get the formatting right.
+        let expected = Regex::new(r"\{ x : Number, y : String; (%\d+) \} -> Dyn").unwrap();
+        let caps = expected.captures(&simplified).unwrap();
+
+        // We should have the generated variable in the contract environment bound to
+        // `$forall_enum_tail_excluded_only ["z"]`. Indeed, `x`, `y` and `z` are excluded fields
+        // for the row variable `r`. Because `forall r` is in positive position, we remove the
+        // forall. `{x: Number, y: String; r}` is in negative position, so we still need to check
+        // for excluded fields, but `x` and `y` are already taken care of in the body of the record
+        // type. It only remains to check that `z` isn't present in the input record.
+        let expected_var = Ident::from(caps.get(1).unwrap().as_str());
+
+        assert_eq!(
+            contract_env.get(&expected_var).unwrap().to_string(),
+            "$forall_record_tail_excluded_only [ \"z\" ]"
+        );
+    }
+}

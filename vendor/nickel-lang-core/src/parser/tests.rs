@@ -1,11 +1,8 @@
-use std::rc::Rc;
-
 use super::lexer::{Lexer, MultiStringToken, NormalToken, StringToken, SymbolicStringStart, Token};
-use super::utils::{build_record, FieldPathElem};
 use crate::error::ParseError;
+use crate::files::Files;
 use crate::identifier::LocIdent;
-use crate::parser::{error::ParseError as InternalParseError, ErrorTolerantParser};
-use crate::term::array::Array;
+use crate::parser::{error::ParseError as InternalParseError, ErrorTolerantParserCompat};
 use crate::term::Number;
 use crate::term::Term::*;
 use crate::term::{make as mk_term, Term};
@@ -13,13 +10,12 @@ use crate::term::{record, BinaryOp, RichTerm, StrChunk, UnaryOp};
 
 use crate::mk_app;
 use assert_matches::assert_matches;
-use codespan::Files;
 
 fn parse(s: &str) -> Result<RichTerm, ParseError> {
     let id = Files::new().add("<test>", String::from(s));
 
     super::grammar::TermParser::new()
-        .parse_strict(id, Lexer::new(s))
+        .parse_strict_compat(id, Lexer::new(s))
         .map_err(|errs| errs.errors.first().unwrap().clone())
 }
 
@@ -41,29 +37,38 @@ fn mk_single_chunk(s: &str) -> RichTerm {
 }
 
 fn mk_symbolic_single_chunk(prefix: &str, s: &str) -> RichTerm {
-    use crate::term::record::Field;
+    use crate::term::{make::builder, SharedTerm};
 
-    build_record(
-        [
-            (
-                FieldPathElem::Ident("tag".into()),
-                Field::from(RichTerm::from(Term::Enum("SymbolicString".into()))),
-            ),
-            (
-                FieldPathElem::Ident("prefix".into()),
-                Field::from(RichTerm::from(Term::Enum(prefix.into()))),
-            ),
-            (
-                FieldPathElem::Ident("fragments".into()),
-                Field::from(RichTerm::from(Array(
-                    Array::new(Rc::new([mk_single_chunk(s)])),
-                    Default::default(),
-                ))),
-            ),
-        ],
-        Default::default(),
-    )
-    .into()
+    let mut result: RichTerm = builder::Record::new()
+        .field("tag")
+        .value(Term::Enum("SymbolicString".into()))
+        .field("prefix")
+        .value(Term::Enum(prefix.into()))
+        .field("fragments")
+        .value(Array(
+            std::iter::once(mk_single_chunk(s)).collect(),
+            Default::default(),
+        ))
+        .into();
+
+    // The builder interface is nice, but it produces non recursive records. Since the new AST
+    // symbolic string chunks produce recursive records (they're not really recursive, but there's
+    // no distinction in the source syntax, and it gets translated to a `RecRecord` by default).
+    //
+    // We hack around it by "peeling off" the outer record layer and replacing it with a recursive
+    // record.
+
+    let term_mut = SharedTerm::make_mut(&mut result.term);
+    let content = std::mem::replace(term_mut, Term::Null);
+
+    if let Term::Record(data) = content {
+        *term_mut = RecRecord(data, Vec::new(), Vec::new(), None);
+        result
+    } else {
+        unreachable!(
+            "record was built using Record::builder, expected a record term, got something else"
+        )
+    }
 }
 
 #[test]
@@ -256,6 +261,7 @@ fn record_terms() {
                 .into_iter()
             ),
             Vec::new(),
+            Vec::new(),
             None,
         )
         .into()
@@ -271,6 +277,7 @@ fn record_terms() {
                 ]
                 .into_iter()
             ),
+            Vec::new(),
             vec![(
                 StrChunks(vec![StrChunk::expr(mk_term::integer(123))]).into(),
                 Field::from(mk_app!(
@@ -294,6 +301,7 @@ fn record_terms() {
                 ]
                 .into_iter()
             ),
+            Vec::new(),
             Vec::new(),
             None,
         )
@@ -555,7 +563,7 @@ fn ty_var_kind_mismatch() {
 fn import() {
     assert_eq!(
         parse_without_pos("import \"file.ncl\""),
-        mk_term::import("file.ncl")
+        mk_term::import("file.ncl", crate::cache::InputFormat::Nickel)
     );
     assert_matches!(
         parse("import \"file.ncl\" some args"),
@@ -564,7 +572,7 @@ fn import() {
     assert_eq!(
         parse_without_pos("(import \"file.ncl\") some args"),
         mk_app!(
-            mk_term::import("file.ncl"),
+            mk_term::import("file.ncl", crate::cache::InputFormat::Nickel),
             mk_term::var("some"),
             mk_term::var("args")
         )

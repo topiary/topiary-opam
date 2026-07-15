@@ -11,9 +11,9 @@
 
 [package]
 edition = "2021"
-rust-version = "1.74.1"
+rust-version = "1.84"
 name = "tree-sitter-highlight"
-version = "0.24.7"
+version = "0.26.3"
 authors = [
     "Max Brunsfeld <maxbrunsfeld@gmail.com>",
     "Tim Clem <timothy.clem@gmail.com>",
@@ -26,6 +26,7 @@ autotests = false
 autobenches = false
 description = "Library for performing syntax highlighting with Tree-sitter"
 homepage = "https://tree-sitter.github.io/tree-sitter"
+documentation = "https://docs.rs/tree-sitter-highlight"
 readme = "README.md"
 keywords = [
     "incremental",
@@ -46,22 +47,19 @@ crate-type = [
     "lib",
     "staticlib",
 ]
-path = "src/lib.rs"
-
-[dependencies.lazy_static]
-version = "1.5.0"
+path = "src/highlight.rs"
 
 [dependencies.regex]
-version = "1.10.6"
+version = "1.11.3"
 
 [dependencies.streaming-iterator]
 version = "0.1.9"
 
 [dependencies.thiserror]
-version = "1.0.64"
+version = "2.0.17"
 
 [dependencies.tree-sitter]
-version = "0.24.5"
+version = "0.26.3"
 
 [lints.clippy]
 branches_sharing_code = "allow"
@@ -84,6 +82,8 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 module_name_repetitions = "allow"
 multiple_crate_versions = "allow"
+needless_for_each = "allow"
+obfuscated_if_else = "allow"
 option_if_let_else = "allow"
 or_fun_call = "allow"
 range_plus_one = "allow"
@@ -112,3 +112,6 @@ priority = -1
 [lints.clippy.pedantic]
 level = "warn"
 priority = -1
+
+[lints.rust]
+mismatched_lifetime_syntaxes = "allow"

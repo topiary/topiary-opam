@@ -11,13 +11,13 @@
 //! - All the fields of `r1` that are not in `r2`
 //! - All the fields of `r2` that are not in `r1`
 //! - Fields that are both in `r1` and `r2` are recursively merged: for a field `f`, the result
-//! contains the binding `f = r1.f & r2.f`
+//!   contains the binding `f = r1.f & r2.f`
 //!
 //! As fields are recursively merged, merge needs to operate on any value, not only on records:
 //!
 //! - *function*: merging a function with anything else fails
 //! - *values*: merging any other values succeeds if and only if these two values are equals, in
-//! which case it evaluates to this common value.
+//!   which case it evaluates to this common value.
 //!
 //! ## Metadata
 //!
@@ -26,18 +26,25 @@
 //! depend on each metadata.
 
 use super::*;
-use crate::closurize::Closurize;
-use crate::combine::Combine;
-use crate::error::{EvalError, IllegalPolymorphicTailAction};
-use crate::label::{Label, MergeLabel};
-use crate::position::TermPos;
-use crate::term::{
-    record::{self, Field, FieldDeps, FieldMetadata, RecordAttrs, RecordData},
-    BinaryOp, EnumVariantAttrs, IndexMap, RichTerm, Term, TypeAnnotation,
+use crate::{
+    closurize::Closurize,
+    combine::Combine,
+    error::{EvalError, IllegalPolymorphicTailAction},
+    label::{Label, MergeLabel},
+    position::TermPos,
+    term::{
+        make as mk_term,
+        record::{self, Field, FieldDeps, FieldMetadata, RecordAttrs, RecordData},
+        BinaryOp, EnumVariantAttrs, IndexMap, RichTerm, Term, TypeAnnotation,
+    },
 };
 
 /// Merging mode. Merging is used both to combine standard data and to apply contracts defined as
 /// records.
+///
+/// In [MergeMode::Contract] mode, the merge operator acts like a custom contract. Instead of
+/// returning the result directly, it either returns `'Ok result`, or `'Error {..}` if there were
+/// some unexpected extra fields.
 #[derive(Clone, PartialEq, Debug)]
 pub enum MergeMode {
     /// Standard merging, for combining data.
@@ -84,7 +91,12 @@ pub fn merge<C: Cache>(
         pos: pos2,
     } = t2;
 
-    match (t1.into_owned(), t2.into_owned()) {
+    // Determines if we need to wrap the result in `'Ok` upon successful merging, which is the case
+    // when in contract merge mode. We're going to move out of `mode` at some point, so we need to
+    // save this information now.
+    let wrap_in_ok = matches!(mode, MergeMode::Contract(_));
+
+    let result = match (t1.into_owned(), t2.into_owned()) {
         // Merge is idempotent on basic terms
         (Term::Null, Term::Null) => Ok(Closure::atomic_closure(RichTerm::new(
             Term::Null,
@@ -217,7 +229,7 @@ pub fn merge<C: Cache>(
             );
 
             let label = Label {
-                typ: Rc::new(TypeF::Flat(contract_for_display).into()),
+                typ: Rc::new(TypeF::Contract(contract_for_display).into()),
                 span: MergeLabel::from(mode).span,
                 ..Default::default()
             }
@@ -267,29 +279,28 @@ pub fn merge<C: Cache>(
             } = split::split(r1.fields, r2.fields);
 
             match mode {
-                MergeMode::Contract(label) if !r2.attrs.open && !left.is_empty() => {
+                MergeMode::Contract(_) if !r2.attrs.open && !left.is_empty() => {
                     let fields: Vec<String> =
                         left.keys().map(|field| format!("`{field}`")).collect();
                     let plural = if fields.len() == 1 { "" } else { "s" };
                     let fields_list = fields.join(", ");
 
-                    let label = label
-                        .with_diagnostic_message(format!("extra field{plural} {fields_list}"))
-                        .with_diagnostic_notes(vec![
-                            String::from("Have you misspelled a field?"),
-                            String::from(
-                                "The record contract might also be too strict. By default, \
-                                record contracts exclude any field which is not listed.\n\
-                                Append `, ..` at the end of the record contract, as in \
-                                `{some_field | SomeContract, ..}`, to make it accept extra fields.",
-                            ),
-                        ]);
-
-                    return Err(EvalError::BlameError {
-                        evaluated_arg: label.get_evaluated_arg(cache),
-                        label,
-                        call_stack: CallStack::new(),
-                    });
+                    // The presence of extra fields is an immediate contract error. Thus, instead
+                    // of raising a blame error as for a delayed contract error, which can't be
+                    // caught in user-code, we return an `'Error {..}` value instead.
+                    return Ok(Closure::atomic_closure(
+                        mk_term::enum_variant("Error", Term::Record(RecordData::with_field_values([
+                            ("message".into(), mk_term::string(format!("extra field{plural} {fields_list}"))),
+                            ("notes".into(), Term::Array([
+                                mk_term::string("Have you misspelled a field?"),
+                                mk_term::string(
+                                    "The record contract might also be too strict. By default, \
+                                    record contracts exclude any field which is not listed.\n\
+                                    Append `, ..` at the end of the record contract, as in \
+                                    `{some_field | SomeContract, ..}`, to make it accept extra fields."
+                                ),
+                            ].into_iter().collect(), Default::default()).into())
+                        ])))));
                 }
                 _ => (),
             };
@@ -348,26 +359,38 @@ pub fn merge<C: Cache>(
                     // of program transformations. At this point, the interpreter doesn't care
                     // about them anymore, and dependencies are stored at the level of revertible
                     // cache elements directly.
-                    Term::RecRecord(RecordData::new(m, attrs, None), Vec::new(), None),
+                    //
+                    // Include expressions are transformed to normal fields the very first time
+                    // they are seen, and there's no way back. We always set them to empty here.
+                    Term::RecRecord(
+                        RecordData::new(m, attrs, None),
+                        Vec::new(),
+                        Vec::new(),
+                        None,
+                    ),
                     final_pos,
                 ),
                 env: Environment::new(),
             })
         }
-        (t1_, t2_) => match (mode, &t2_) {
-            // We want to merge a non-record term with a record contract
-            (MergeMode::Contract(label), Term::Record(..)) => Err(EvalError::BlameError {
-                evaluated_arg: label.get_evaluated_arg(cache),
-                label,
-                call_stack: call_stack.clone(),
-            }),
-            // The following cases are either errors or not yet implemented
-            (mode, _) => Err(EvalError::MergeIncompatibleArgs {
-                left_arg: RichTerm::new(t1_, pos1),
-                right_arg: RichTerm::new(t2_, pos2),
-                merge_label: mode.into(),
-            }),
-        },
+        (t1_, t2_) => Err(EvalError::MergeIncompatibleArgs {
+            left_arg: RichTerm::new(t1_, pos1),
+            right_arg: RichTerm::new(t2_, pos2),
+            merge_label: mode.into(),
+        }),
+    };
+
+    if wrap_in_ok {
+        result.map(|closure| {
+            let pos = closure.body.pos;
+
+            Closure {
+                body: mk_term::enum_variant("Ok", closure.body).with_pos(pos),
+                ..closure
+            }
+        })
+    } else {
+        result
     }
 }
 
@@ -412,14 +435,15 @@ fn merge_fields<'a, C: Cache, I: DoubleEndedIterator<Item = &'a LocIdent> + Clon
         _ => unreachable!(),
     };
 
-    let mut pending_contracts = pending_contracts1.revert_closurize(cache);
-
     // Since contracts are closurized, they don't need another local environment
     let empty = Environment::new();
 
-    for ctr2 in pending_contracts2.revert_closurize(cache) {
-        RuntimeContract::push_dedup(&mut pending_contracts, &empty, ctr2, &empty);
-    }
+    let pending_contracts = RuntimeContract::combine_dedup(
+        pending_contracts1.revert_closurize(cache),
+        &empty,
+        pending_contracts2.revert_closurize(cache),
+        &empty,
+    );
 
     Ok(Field {
         metadata: FieldMetadata {
@@ -437,7 +461,13 @@ fn merge_fields<'a, C: Cache, I: DoubleEndedIterator<Item = &'a LocIdent> + Clon
 }
 
 /// Merge two optional documentations.
-pub(crate) fn merge_doc(doc1: Option<String>, doc2: Option<String>) -> Option<String> {
+///
+/// This function is parametrized temporarily to accomodate both the mainline Nickel AST
+/// ([crate::term::Term]) where documentation is represented as a `String`, and the new bytecode
+/// AST where documentation is represented as an `Rc<str>`.
+//FIXME: remove the type parameter `D` once we've moved evaluation to the new bytecode VM.
+//Currently we need to handle both the old representation `D=String` and the new one `D=Rc<str>`.
+pub(crate) fn merge_doc<D>(doc1: Option<D>, doc2: Option<D>) -> Option<D> {
     //FIXME: how to merge documentation? Just concatenate?
     doc1.or(doc2)
 }
@@ -474,6 +504,7 @@ impl Saturate for RichTerm {
                 .saturate(idx.clone(), fields.map(LocIdent::ident))
                 .with_pos(self.pos))
         } else {
+            debug_assert!(self.as_ref().is_constant());
             Ok(self)
         }
     }
@@ -591,7 +622,12 @@ pub mod split {
         let mut right = m2;
 
         for (key, value) in m1 {
-            if let Some(v2) = right.remove(&key) {
+            // We don't perserve the ordering of the right part. However, note that currently, what
+            // matters is that the iteration order on hashmap is _deterministic_. It's a bonus that
+            // it corresponds to insertion order for record literal, but we don't make any
+            // guarantee on the result of merging or other operations. Exporting will sort the
+            // result anyway.
+            if let Some(v2) = right.swap_remove(&key) {
                 center.insert(key, (value, v2));
             } else {
                 left.insert(key, value);
@@ -621,7 +657,7 @@ pub mod split {
                 right,
             } = split(m1, m2);
 
-            if left.remove(&1) == Some(1)
+            if left.swap_remove(&1) == Some(1)
                 && left.is_empty()
                 && center.is_empty()
                 && right.is_empty()
@@ -644,7 +680,7 @@ pub mod split {
                 mut right,
             } = split(m1, m2);
 
-            if right.remove(&1) == Some(1)
+            if right.swap_remove(&1) == Some(1)
                 && right.is_empty()
                 && left.is_empty()
                 && center.is_empty()
@@ -670,7 +706,7 @@ pub mod split {
                 right,
             } = split(m1, m2);
 
-            if center.remove(&1) == Some((1, 2))
+            if center.swap_remove(&1) == Some((1, 2))
                 && center.is_empty()
                 && left.is_empty()
                 && right.is_empty()
@@ -698,9 +734,9 @@ pub mod split {
                 mut right,
             } = split(m1, m2);
 
-            if left.remove(&2) == Some(1)
-                && center.remove(&1) == Some((1, -1))
-                && right.remove(&3) == Some(-1)
+            if left.swap_remove(&2) == Some(1)
+                && center.swap_remove(&1) == Some((1, -1))
+                && right.swap_remove(&3) == Some(-1)
                 && left.is_empty()
                 && center.is_empty()
                 && right.is_empty()

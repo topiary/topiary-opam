@@ -9,10 +9,11 @@
 //!
 //! ```rust,no_run
 //! use assert_cmd::prelude::*;
+//! use assert_cmd::pkg_name;
 //!
 //! use std::process::Command;
 //!
-//! let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))
+//! let mut cmd = Command::cargo_bin(pkg_name!())
 //!     .unwrap();
 //! let output = cmd.unwrap();
 //! ```
@@ -60,6 +61,11 @@ use std::fmt;
 use std::path;
 use std::process;
 
+#[doc(inline)]
+pub use crate::cargo_bin;
+#[doc(inline)]
+pub use crate::cargo_bin_cmd;
+
 /// Create a [`Command`] for a `bin` in the Cargo project.
 ///
 /// `CommandCargoExt` is an extension trait for [`Command`][std::process::Command] to easily launch a crate's
@@ -71,10 +77,11 @@ use std::process;
 ///
 /// ```rust,no_run
 /// use assert_cmd::prelude::*;
+/// use assert_cmd::pkg_name;
 ///
 /// use std::process::Command;
 ///
-/// let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))
+/// let mut cmd = Command::cargo_bin(pkg_name!())
 ///     .unwrap();
 /// let output = cmd.unwrap();
 /// println!("{:?}", output);
@@ -95,14 +102,17 @@ where
     /// this method with [cross](https://github.com/cross-rs/cross), no extra configuration is
     /// needed.
     ///
+    /// **NOTE:** Prefer [`cargo_bin!`] as this makes assumptions about cargo
+    ///
     /// # Examples
     ///
     /// ```rust,no_run
     /// use assert_cmd::prelude::*;
+    /// use assert_cmd::pkg_name;
     ///
     /// use std::process::Command;
     ///
-    /// let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))
+    /// let mut cmd = Command::cargo_bin(pkg_name!())
     ///     .unwrap();
     /// let output = cmd.unwrap();
     /// println!("{:?}", output);
@@ -120,11 +130,16 @@ where
     /// ```
     ///
     /// [`Command`]: std::process::Command
+    #[deprecated(
+        since = "2.1.0",
+        note = "incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin!`"
+    )]
     fn cargo_bin<S: AsRef<str>>(name: S) -> Result<Self, CargoError>;
 }
 
 impl CommandCargoExt for crate::cmd::Command {
     fn cargo_bin<S: AsRef<str>>(name: S) -> Result<Self, CargoError> {
+        #[allow(deprecated)]
         crate::cmd::Command::cargo_bin(name)
     }
 }
@@ -136,6 +151,7 @@ impl CommandCargoExt for process::Command {
 }
 
 pub(crate) fn cargo_bin_cmd<S: AsRef<str>>(name: S) -> Result<process::Command, CargoError> {
+    #[allow(deprecated)]
     let path = cargo_bin(name);
     if path.is_file() {
         if let Some(runner) = cargo_runner() {
@@ -181,7 +197,7 @@ impl Error for CargoError {}
 impl fmt::Display for CargoError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(ref cause) = self.cause {
-            writeln!(f, "Cause: {}", cause)?;
+            writeln!(f, "Cause: {cause}")?;
         }
         Ok(())
     }
@@ -217,12 +233,18 @@ fn target_dir() -> path::PathBuf {
 }
 
 /// Look up the path to a cargo-built binary within an integration test.
+///
+/// **NOTE:** Prefer [`cargo_bin!`] as this makes assumptions about cargo
+#[deprecated(
+    since = "2.1.0",
+    note = "incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin!`"
+)]
 pub fn cargo_bin<S: AsRef<str>>(name: S) -> path::PathBuf {
     cargo_bin_str(name.as_ref())
 }
 
 fn cargo_bin_str(name: &str) -> path::PathBuf {
-    let env_var = format!("CARGO_BIN_EXE_{}", name);
+    let env_var = format!("CARGO_BIN_EXE_{name}");
     env::var_os(env_var)
         .map(|p| p.into())
         .unwrap_or_else(|| target_dir().join(format!("{}{}", name, env::consts::EXE_SUFFIX)))

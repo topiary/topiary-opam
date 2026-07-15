@@ -1,9 +1,14 @@
-use criterion::{
-    black_box, criterion_group,
-    measurement::{Measurement, ValueFormatter},
-    Criterion, Throughput,
+use {
+    criterion::{
+        criterion_group,
+        measurement::{Measurement, ValueFormatter},
+        Criterion, Throughput,
+    },
+    std::{
+        hint::black_box,
+        time::{Duration, Instant},
+    },
 };
-use std::time::{Duration, Instant};
 
 struct HalfSecFormatter;
 impl ValueFormatter for HalfSecFormatter {
@@ -17,9 +22,20 @@ impl ValueFormatter for HalfSecFormatter {
             Throughput::Bytes(bytes) | Throughput::BytesDecimal(bytes) => {
                 format!("{} b/s/2", (bytes as f64) / (value * 2f64 * 10f64.powi(-9)))
             }
+            Throughput::Bits(bits) => {
+                format!(
+                    "{} bits/s/2",
+                    (bits as f64) / (value * 2f64 * 10f64.powi(-9))
+                )
+            }
             Throughput::Elements(elems) => format!(
                 "{} elem/s/2",
                 (elems as f64) / (value * 2f64 * 10f64.powi(-9))
+            ),
+            Throughput::ElementsAndBytes { elements, bytes } => format!(
+                "{} elem/s/2, {} b/s/2",
+                (elements as f64) / (value * 2f64 * 10f64.powi(-9)),
+                (bytes as f64) / (value * 2f64 * 10f64.powi(-9))
             ),
         }
     }
@@ -41,17 +57,27 @@ impl ValueFormatter for HalfSecFormatter {
         match *throughput {
             Throughput::Bytes(bytes) | Throughput::BytesDecimal(bytes) => {
                 for val in values {
-                    *val = (bytes as f64) / (*val * 2f64 * 10f64.powi(-9))
+                    *val = (bytes as f64) / (*val * 2f64 * 10f64.powi(-9));
                 }
 
                 "b/s/2"
             }
+            Throughput::Bits(bits) => {
+                for val in values {
+                    *val = (bits as f64) / (*val * 2f64 * 10f64.powi(-9));
+                }
+
+                "bits/s/2"
+            }
             Throughput::Elements(elems) => {
                 for val in values {
-                    *val = (elems as f64) / (*val * 2f64 * 10f64.powi(-9))
+                    *val = (elems as f64) / (*val * 2f64 * 10f64.powi(-9));
                 }
 
                 "elem/s/2"
+            }
+            Throughput::ElementsAndBytes { elements, bytes: _ } => {
+                self.scale_throughputs(_typical, &Throughput::Elements(elements), values)
             }
         }
     }
@@ -103,7 +129,7 @@ fn fibonacci_slow(n: u64) -> u64 {
 
 fn fibonacci_cycles(criterion: &mut Criterion<HalfSeconds>) {
     criterion.bench_function("fibonacci_custom_measurement", |bencher| {
-        bencher.iter(|| fibonacci_slow(black_box(10)))
+        bencher.iter(|| fibonacci_slow(black_box(10)));
     });
 }
 

@@ -1,15 +1,24 @@
-use super::{debug_script, gnuplot_escape};
-use super::{DARK_BLUE, DEFAULT_FONT, KDE_POINTS, LINEWIDTH, POINT_SIZE, SIZE};
-use crate::kde;
-use crate::measurement::ValueFormatter;
-use crate::report::{BenchmarkId, ValueType};
-use crate::stats::univariate::Sample;
-use crate::AxisScale;
-use criterion_plot::prelude::*;
-use itertools::Itertools;
-use std::cmp::Ordering;
-use std::path::{Path, PathBuf};
-use std::process::Child;
+use {
+    super::{
+        debug_script, gnuplot_escape, DARK_BLUE, DEFAULT_FONT, KDE_POINTS, LINEWIDTH, POINT_SIZE,
+        SIZE,
+    },
+    crate::{
+        kde,
+        measurement::ValueFormatter,
+        plot::LinePlotConfig,
+        report::{BenchmarkId, ValueType},
+        stats::univariate::Sample,
+        AxisScale,
+    },
+    criterion_plot::prelude::*,
+    itertools::Itertools,
+    std::{
+        cmp::Ordering,
+        path::{Path, PathBuf},
+        process::Child,
+    },
+};
 
 const NUM_COLORS: usize = 8;
 static COMPARISON_COLORS: [Color; NUM_COLORS] = [
@@ -32,8 +41,9 @@ impl AxisScale {
     }
 }
 
-#[cfg_attr(feature = "cargo-clippy", allow(clippy::explicit_counter_loop))]
-pub fn line_comparison(
+#[allow(clippy::explicit_counter_loop)]
+pub(crate) fn line_comparison(
+    line_cfg: LinePlotConfig,
     formatter: &dyn ValueFormatter,
     title: &str,
     all_curves: &[&(&BenchmarkId, Vec<f64>)],
@@ -47,6 +57,7 @@ pub fn line_comparison(
     let input_suffix = match value_type {
         ValueType::Bytes => " Size (Bytes)",
         ValueType::Elements => " Size (Elements)",
+        ValueType::Bits => " Size (Bits)",
         ValueType::Value => "",
     };
 
@@ -65,38 +76,43 @@ pub fn line_comparison(
 
     let mut i = 0;
 
-    let max = all_curves
+    let (max_id, max) = all_curves
         .iter()
-        .map(|&(_, data)| Sample::new(data).mean())
-        .fold(::std::f64::NAN, f64::max);
+        .map(|&(id, data)| (*id, Sample::new(data).mean()))
+        .fold(None, |prev: Option<(&BenchmarkId, f64)>, next| match prev {
+            Some(prev) if prev.1 >= next.1 => Some(prev),
+            _ => Some(next),
+        })
+        .unwrap();
 
-    let mut dummy = [1.0];
-    let unit = formatter.scale_values(max, &mut dummy);
+    let mut max_formatted = [max];
+    let unit = (line_cfg.scale)(formatter, max_id, max, max_id, &mut max_formatted);
 
     f.configure(Axis::LeftY, |a| {
         a.configure(Grid::Major, |g| g.show())
             .configure(Grid::Minor, |g| g.hide())
-            .set(Label(format!("Average time ({})", unit)))
+            .set(Label(format!("Average {} ({})", line_cfg.label, unit)))
             .set(axis_scale.to_gnuplot())
     });
 
     // This assumes the curves are sorted. It also assumes that the benchmark IDs all have numeric
     // values or throughputs and that value is sensible (ie. not a mix of bytes and elements
     // or whatnot)
-    for (key, group) in &all_curves.iter().group_by(|&&&(id, _)| &id.function_id) {
+    for (key, group) in &all_curves.iter().chunk_by(|&&&(id, _)| &id.function_id) {
         let mut tuples: Vec<_> = group
             .map(|&&(id, ref sample)| {
                 // Unwrap is fine here because it will only fail if the assumptions above are not true
                 // ie. programmer error.
                 let x = id.as_number().unwrap();
-                let y = Sample::new(sample).mean();
+                let mut y = [Sample::new(sample).mean()];
 
-                (x, y)
+                (line_cfg.scale)(formatter, max_id, max, id, &mut y);
+
+                (x, y[0])
             })
             .collect();
-        tuples.sort_by(|&(ax, _), &(bx, _)| (ax.partial_cmp(&bx).unwrap_or(Ordering::Less)));
-        let (xs, mut ys): (Vec<_>, Vec<_>) = tuples.into_iter().unzip();
-        formatter.scale_values(max, &mut ys);
+        tuples.sort_by(|&(ax, _), &(bx, _)| ax.partial_cmp(&bx).unwrap_or(Ordering::Less));
+        let (xs, ys): (Vec<_>, Vec<_>) = tuples.into_iter().unzip();
 
         let function_name = key.as_ref().map(|string| gnuplot_escape(string));
 

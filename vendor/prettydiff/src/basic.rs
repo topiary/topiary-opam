@@ -1,6 +1,6 @@
 //! Basic diff functions
 use crate::lcs;
-use ansi_term::Colour;
+use owo_colors::OwoColorize;
 use std::fmt;
 
 /// Single change in original slice needed to get new slice
@@ -52,7 +52,7 @@ pub struct SliceChangeset<'a, T> {
     pub diff: Vec<DiffOp<'a, T>>,
 }
 
-impl<'a, T: fmt::Display> SliceChangeset<'a, T> {
+impl<T: fmt::Display> SliceChangeset<'_, T> {
     pub fn format(&self, skip_same: bool) -> String {
         let mut out: Vec<String> = Vec::with_capacity(self.diff.len());
         for op in &self.diff {
@@ -69,13 +69,13 @@ impl<'a, T: fmt::Display> SliceChangeset<'a, T> {
 
                 DiffOp::Insert(a) => {
                     for i in a.iter() {
-                        out.push(Colour::Green.paint(format!("+   {}", i)).to_string());
+                        out.push((format!("+   {}", i).green()).to_string());
                     }
                 }
 
                 DiffOp::Remove(a) => {
                     for i in a.iter() {
-                        out.push(Colour::Red.paint(format!("-   {}", i)).to_string());
+                        out.push(format!("-   {}", i).red().to_string());
                     }
                 }
                 DiffOp::Replace(a, b) => {
@@ -83,17 +83,13 @@ impl<'a, T: fmt::Display> SliceChangeset<'a, T> {
                     let max_len = std::cmp::max(a.len(), b.len());
 
                     for i in 0..min_len {
-                        out.push(
-                            Colour::Yellow
-                                .paint(format!("~   {} -> {}", a[i], b[i]))
-                                .to_string(),
-                        );
+                        out.push(format!("~   {} -> {}", a[i], b[i]).yellow().to_string());
                     }
                     for i in min_len..max_len {
                         if max_len == a.len() {
-                            out.push(Colour::Red.paint(format!("-   {}", a[i])).to_string());
+                            out.push(format!("-   {}", a[i]).red().to_string());
                         } else {
-                            out.push(Colour::Green.paint(format!("+   {}", b[i])).to_string());
+                            out.push(format!("+   {}", b[i]).green().to_string());
                         }
                     }
                 }
@@ -103,7 +99,7 @@ impl<'a, T: fmt::Display> SliceChangeset<'a, T> {
     }
 }
 
-impl<'a, T: fmt::Display> fmt::Display for SliceChangeset<'a, T> {
+impl<T: fmt::Display> fmt::Display for SliceChangeset<'_, T> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         write!(formatter, "{}", self.format(true))
     }

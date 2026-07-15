@@ -1,0 +1,11 @@
+[package]
+name = "simple-counter"
+version = "0.1.0"
+authors = ["Newton Ni <nwtnni@gmail.com>"]
+description = "Macro for generating thread-local static counters. Useful for basic ID generation."
+documentation = "https://docs.rs/simple-counter"
+repository = "https://github.com/nwtnni/simple-counter"
+readme = "README.md"
+keywords = ["identifier", "count", "counter", "id"]
+license = "MIT"
+license-file = "LICENSE"

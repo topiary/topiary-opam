@@ -274,8 +274,7 @@ where
         // to push and directly pop `Append` documents)
         match doc {
             Doc::Append(l, r) => {
-                let d = append_docs(r, consumer);
-                consumer(d);
+                consumer(r);
                 doc = l;
             }
             _ => return doc,
@@ -348,10 +347,7 @@ impl<'d, 'a, T, A> Best<'d, 'a, T, A>
 where
     T: DocPtr<'a, A> + 'a,
 {
-    fn fitting(&mut self, next: &'d Doc<'a, T, A>, mut pos: usize, ind: usize) -> bool
-    where
-        T: DocPtr<'a, A>,
-    {
+    fn fitting(&mut self, next: &'d Doc<'a, T, A>, mut pos: usize, ind: usize) -> bool {
         let mut bidx = self.bcmds.len();
         self.fcmds.clear(); // clear from previous calls from best
         self.fcmds.push(next);
@@ -388,7 +384,7 @@ where
                             return false;
                         }
                     }
-                    Doc::BorrowedText(ref str) => {
+                    Doc::BorrowedText(str) => {
                         pos += str.len();
                         if pos > self.width {
                             return false;
@@ -481,8 +477,17 @@ where
                         continue;
                     }
                     Doc::Hardline => {
-                        write_newline(ind, out)?;
-                        self.pos = ind;
+                        // The next document may have different indentation so we should use it if
+                        // we can
+                        if let Some(next) = self.bcmds.pop() {
+                            write_newline(next.0, out)?;
+                            self.pos = next.0;
+                            cmd = next;
+                            continue;
+                        } else {
+                            write_newline(ind, out)?;
+                            self.pos = ind;
+                        }
                     }
                     Doc::RenderLen(len, ref doc) => match **doc {
                         Doc::OwnedText(ref s) => {
@@ -490,7 +495,7 @@ where
                             self.pos += len;
                             fits &= self.pos <= self.width;
                         }
-                        Doc::BorrowedText(ref s) => {
+                        Doc::BorrowedText(s) => {
                             out.write_str_all(s)?;
                             self.pos += len;
                             fits &= self.pos <= self.width;
@@ -507,7 +512,7 @@ where
                         self.pos += s.len();
                         fits &= self.pos <= self.width;
                     }
-                    Doc::BorrowedText(ref s) => {
+                    Doc::BorrowedText(s) => {
                         out.write_str_all(s)?;
                         self.pos += s.len();
                         fits &= self.pos <= self.width;

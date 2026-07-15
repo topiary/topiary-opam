@@ -14,16 +14,18 @@ smaller than `'static`.
 While the future combinators such as `for_each_concurrent`
 offer concurrency, they are bundled as a single `Task`
 structure by the executor, and hence are not driven
-parallelly. This can be seen when benchmarking a reasonable
+in parallel. This can be seen when benchmarking a reasonable
 number (> ~1K) of I/O futures, or a few CPU heavy futures.
 
 ## Usage
 
 The API is meant to be a minimal wrapper around efficient
-executors. Users **must use** either "use-async-std", or the
-"use-tokio" feature gates, to obtain a usable scope type.
-These gates provide `TokioScope` and `AsyncScope` that
-support spawning, and blocking. See
+executors. Users may use "use-async-std", or the
+"use-tokio" features, to obtain a specific global executor implementation.
+These features provide `TokioScope` and `AsyncScope` that
+support spawning, and blocking.
+However, none of those features are necessary -
+you may freely implement your own executor. See
 [docs.rs](https://docs.rs/async-scoped) for detailed
 documentation.
 

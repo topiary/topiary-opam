@@ -23,6 +23,20 @@ pub struct RecordAttrs {
     /// be closurized by construction. In the meantime, while we need to cope with a unique AST
     /// across the whole pipeline, we use this flag.
     pub closurized: bool,
+    /// If the record has been frozen.
+    ///
+    /// A recursive record is frozen when all the lazy contracts are applied to their corresponding
+    /// fields and flushed from the lazy contracts list. The values of the fields are computed but
+    /// all dependencies are erased. That is, we turn a recursive, overridable record into a static
+    /// dictionary. The information about field dependencies is lost and future overriding won't
+    /// update reverse dependencies.
+    ///
+    /// Like `closurized`, we store this information for performance reason: freezing is expensive
+    /// (linear in the number of fields of the record), and we might need to do it on every
+    /// dictionary operation such as `insert`, `remove`, etc. (see
+    /// [#1877](https://github.com/tweag/nickel/issues/1877)). This flags avoid repeated, useless
+    /// freezing.
+    pub frozen: bool,
 }
 
 impl RecordAttrs {
@@ -30,9 +44,15 @@ impl RecordAttrs {
         Self::default()
     }
 
-    /// Set the `closurized` flag to true and return the updated attributes.
+    /// Sets the `closurized` flag to true and return the updated attributes.
     pub fn closurized(mut self) -> Self {
         self.closurized = true;
+        self
+    }
+
+    /// Sets the `frozen` flag to true and return the updated attributes.
+    pub fn frozen(mut self) -> Self {
+        self.frozen = true;
         self
     }
 }
@@ -42,6 +62,7 @@ impl Combine for RecordAttrs {
         RecordAttrs {
             open: left.open || right.open,
             closurized: left.closurized && right.closurized,
+            frozen: left.frozen && right.frozen,
         }
     }
 }
@@ -93,14 +114,27 @@ impl From<HashSet<Ident>> for FieldDeps {
     }
 }
 
-/// Store field interdependencies in a recursive record. Map each static and dynamic field to the
-/// set of recursive fields that syntactically appears in their definition as free variables.
+/// Store field interdependencies in a recursive record. Map each static, dynamic and included
+/// field to the set of recursive fields that syntactically appear in their definition as free
+/// variables.
 #[derive(Debug, Default, Eq, PartialEq, Clone)]
 pub struct RecordDeps {
-    /// Must have exactly the same keys as the static fields map of the recursive record.
+    /// Must have exactly the same keys as the static fields map of the recursive record and the
+    /// include expressions. Static fields and include expressions are combined because at the time
+    /// the evaluator uses the dependencies, include expressions don't exist anymore: they have
+    /// already been elaborated to static fields and inserted.
     pub stat_fields: IndexMap<Ident, FieldDeps>,
     /// Must have exactly the same length as the dynamic fields list of the recursive record.
     pub dyn_fields: Vec<FieldDeps>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+/// An include expression (see [crate::bytecode::ast::record::Include]).
+pub struct Include {
+    /// The included identifier.
+    pub ident: LocIdent,
+    /// The field metadata.
+    pub metadata: FieldMetadata,
 }
 
 /// The metadata attached to record fields.
@@ -126,6 +160,34 @@ impl FieldMetadata {
             && !self.opt
             && !self.not_exported
             && matches!(self.priority, MergePriority::Neutral)
+    }
+
+    /// Set the `field_name` attribute of the labels of the type and contracts annotations.
+    pub fn with_field_name(mut self, name: Option<LocIdent>) -> Self {
+        self.annotation = self.annotation.with_field_name(name);
+        self
+    }
+}
+
+impl Combine for FieldMetadata {
+    fn combine(left: Self, right: Self) -> Self {
+        let priority = match (left.priority, right.priority) {
+            // Neutral corresponds to the case where no priority was specified. In that case, the
+            // other priority takes precedence.
+            (MergePriority::Neutral, p) | (p, MergePriority::Neutral) => p,
+            // Otherwise, we keep the maximum of both priorities, as we would do when merging
+            // values.
+            (p1, p2) => std::cmp::max(p1, p2),
+        };
+
+        FieldMetadata {
+            doc: crate::eval::merge::merge_doc(left.doc, right.doc),
+            annotation: Combine::combine(left.annotation, right.annotation),
+            opt: left.opt || right.opt,
+            // The resulting field will be suppressed from serialization if either of the fields to be merged is.
+            not_exported: left.not_exported || right.not_exported,
+            priority,
+        }
     }
 }
 
@@ -206,16 +268,6 @@ impl Field {
             RecordExtKind::WithValue
         } else {
             RecordExtKind::WithoutValue
-        }
-    }
-
-    pub fn with_name(self, field_name: Option<LocIdent>) -> Self {
-        Field {
-            metadata: FieldMetadata {
-                annotation: self.metadata.annotation.with_field_name(field_name),
-                ..self.metadata
-            },
-            ..self
         }
     }
 }
@@ -378,7 +430,7 @@ impl RecordData {
                     let pos = v.pos;
                     Some(Ok((
                         id.ident(),
-                        RuntimeContract::apply_all(v, field.pending_contracts.into_iter(), pos),
+                        RuntimeContract::apply_all(v, field.pending_contracts, pos),
                     )))
                 }
                 None if !field.metadata.opt => Some(Err(MissingFieldDefError {
@@ -463,6 +515,11 @@ impl RecordData {
 
         fields.sort_by(|id1, id2| id1.label().cmp(id2.label()));
         fields
+    }
+
+    /// Checks if this record is empty (including the sealed tail).
+    pub fn is_empty(&self) -> bool {
+        self.fields.is_empty() && self.sealed_tail.is_none()
     }
 }
 

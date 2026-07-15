@@ -11,9 +11,8 @@ use crate::{
     position::TermPos,
 };
 
+pub mod bindings;
 pub mod compile;
-
-/// A small helper to generate a
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum PatternData {

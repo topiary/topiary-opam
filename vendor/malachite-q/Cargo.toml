@@ -10,10 +10,10 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2021"
-rust-version = "1.74.0"
+edition = "2024"
+rust-version = "1.85.0"
 name = "malachite-q"
-version = "0.4.18"
+version = "0.6.1"
 authors = ["Mikhail Hogrefe <mikhailhogrefe@gmail.com>"]
 build = false
 autolib = false
@@ -33,12 +33,34 @@ keywords = [
 categories = ["mathematics"]
 license = "LGPL-3.0-only"
 repository = "https://github.com/mhogrefe/malachite"
+resolver = "2"
 
 [package.metadata.docs.rs]
 features = ["random"]
 rustdoc-args = [
     "--html-in-header",
     "katex-header.html",
+]
+
+[features]
+32_bit_limbs = ["malachite-nz/32_bit_limbs"]
+bin_build = ["test_build"]
+enable_serde = [
+    "serde",
+    "malachite-nz/enable_serde",
+]
+random = [
+    "malachite-base/random",
+    "malachite-nz/random",
+]
+test_build = [
+    "malachite-base/test_build",
+    "malachite-nz/test_build",
+    "random",
+    "serde",
+    "serde_json",
+    "num",
+    "rug",
 ]
 
 [lib]
@@ -54,16 +76,16 @@ name = "lib"
 path = "tests/lib.rs"
 
 [dependencies.itertools]
-version = "0.11.0"
+version = "0.14.0"
 features = ["use_alloc"]
 default-features = false
 
 [dependencies.malachite-base]
-version = "0.4.18"
+version = "0.6.1"
 default-features = false
 
 [dependencies.malachite-nz]
-version = "0.4.18"
+version = "0.6.1"
 default-features = false
 
 [dependencies.num]
@@ -94,24 +116,3 @@ version = "1.0.105"
 optional = true
 
 [dev-dependencies]
-
-[features]
-32_bit_limbs = ["malachite-nz/32_bit_limbs"]
-bin_build = ["test_build"]
-enable_serde = [
-    "serde",
-    "malachite-nz/enable_serde",
-]
-random = [
-    "malachite-base/random",
-    "malachite-nz/random",
-]
-test_build = [
-    "malachite-base/test_build",
-    "malachite-nz/test_build",
-    "random",
-    "serde",
-    "serde_json",
-    "num",
-    "rug",
-]

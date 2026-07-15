@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/criterion-rs/criterion.rs/compare/criterion-v0.8.0...criterion-v0.8.1) - 2025-12-07
+
+### Fixed
+
+- Homepage link
+
+### Other
+
+- *(deps)* bump crate-ci/typos from 1.23.5 to 1.40.0
+- *(deps)* bump jontze/action-mdbook from 3 to 4
+- *(deps)* bump actions/checkout from 4 to 6
+
+## [0.8.0](https://github.com/criterion-rs/criterion.rs/compare/criterion-v0.7.0...criterion-v0.8.0) - 2025-11-29
+
+### BREAKING
+
+- Drop async-std support
+
+### Changed
+
+- Bump MSRV to 1.86, stable to 1.91.1
+
+### Added
+
+- Add ability to plot throughput on summary page.
+- Add support for reporting throughput in elements and bytes - `Throughput::ElementsAndBytes` allows the text summary to report throughput in both units simultaneously.
+- Add alloca-based memory layout randomisation to mitigate memory effects on measurements.
+- Add doc comment to benchmark runner in criterion_group macro (removes linter warnings)
+
+### Fixed
+
+- Fix plotting NaN bug
+
+### Other
+
+- Remove Master API Docs links temporarily while we restore the docs publishing.
+
+## [0.7.0] - 2025-07-25
+
+- Bump version of criterion-plot to align dependencies.
+
+## [0.6.0] - 2025-05-17
+
+### Changed
+- MSRV bumped to 1.80
+- The `real_blackbox` feature no longer has any impact. Criterion always uses `std::hint::black_box()` now.
+  Users of `criterion::black_box()` should switch to `std::hint::black_box()`.
+- `clap` dependency unpinned.
+
+### Fixed
+- gnuplot version is now correctly detected when using certain Windows binaries/configurations that used to fail
+
+### Added
+- Async benchmarking with Tokio may be done via a `tokio::runtime::Handle`, not only a `tokio::runtime::Runtime`
+
 ## [0.5.1] - 2023-05-26
 
 ### Fixed

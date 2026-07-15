@@ -7,13 +7,13 @@
 // 3 of the License, or (at your option) any later version. See <https://www.gnu.org/licenses/>.
 
 #[cfg(feature = "random")]
-use crate::bools::random::{weighted_random_bools, WeightedRandomBools};
+use crate::bools::random::{WeightedRandomBools, weighted_random_bools};
 use crate::num::arithmetic::traits::Parity;
 use crate::num::basic::traits::Zero;
 #[cfg(feature = "random")]
 use crate::random::Seed;
 #[cfg(feature = "random")]
-use crate::vecs::{random_values_from_vec, RandomValuesFromVec};
+use crate::vecs::{RandomValuesFromVec, random_values_from_vec};
 use alloc::collections::VecDeque;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -248,7 +248,7 @@ pub fn matching_intervals_in_iterator<I: Iterator, F: Fn(&I::Item) -> bool>(
 where
     I::Item: Clone,
 {
-    xs.group_by(predicate)
+    xs.chunk_by(predicate)
         .into_iter()
         .filter_map(|(b, mut group)| if b { first_and_last(&mut group) } else { None })
         .collect()

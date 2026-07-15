@@ -1,6 +1,6 @@
 //! Types unification.
 
-use super::*;
+use super::{eq::TypeEq, *};
 
 /// Unification variable or type constants unique identifier.
 pub type VarId = usize;
@@ -20,9 +20,7 @@ impl VarLevel {
     /// The first available variable level, `2`.
     // unsafe is required because `unwrap()` is not usable in `const fn` code as of today in stable
     // Rust.
-    // unsafe(): we must enforce the invariant that the argument `n` of `new_unchecked(n)` verifies
-    // `0 < n`. Indeed `0 < 2`.
-    pub const MIN_LEVEL: Self = unsafe { VarLevel(NonZeroU16::new_unchecked(2)) };
+    pub const MIN_LEVEL: Self = VarLevel(NonZeroU16::new(2).unwrap());
     /// The maximum level. Used as an upper bound to indicate that nothing can be said about the
     /// levels of the unification variables contained in a type.
     pub const MAX_LEVEL: Self = VarLevel(NonZeroU16::MAX);
@@ -64,16 +62,16 @@ impl<Ty> UnifSlot<Ty> {
 /// specific invariants. It is used by the `unify` function and its variants, but you should avoid
 /// using it directly, unless you know what you're doing.
 #[derive(Default)]
-pub struct UnifTable {
-    types: Vec<UnifSlot<UnifType>>,
-    rrows: Vec<UnifSlot<UnifRecordRows>>,
-    erows: Vec<UnifSlot<UnifEnumRows>>,
+pub struct UnifTable<'ast> {
+    types: Vec<UnifSlot<UnifType<'ast>>>,
+    rrows: Vec<UnifSlot<UnifRecordRows<'ast>>>,
+    erows: Vec<UnifSlot<UnifEnumRows<'ast>>>,
     pending_type_updates: Vec<VarId>,
     pending_rrows_updates: Vec<VarId>,
     pending_erows_updates: Vec<VarId>,
 }
 
-impl UnifTable {
+impl<'ast> UnifTable<'ast> {
     pub fn new() -> Self {
         UnifTable::default()
     }
@@ -86,16 +84,15 @@ impl UnifTable {
     /// # Preconditions
     ///
     /// - This method doesn't check for the variable level conditions. This is the responsibility
-    /// of the caller.
+    ///   of the caller.
     /// - If the target type is a unification variable as well, it must not be assigned to another
-    /// unification type. That is, `assign` should always be passed a root type. Otherwise, the
-    /// handling of variable levels will be messed up.
+    ///   unification type. That is, `assign` should always be passed a root type. Otherwise, the
+    ///   handling of variable levels will be messed up.
     /// - This method doesn't force pending level updates when needed (calling to
-    /// `force_type_updates`), i.e.
-    /// when `uty` is a rigid type variable. Having pending variable level updates and using
-    /// `assign_type` might make typechecking incorrect in some situation by unduely allowing
-    /// unsound generalization. This is the responsibility of the caller.
-    pub fn assign_type(&mut self, var: VarId, uty: UnifType) {
+    ///   `force_type_updates`), i.e. when `uty` is a rigid type variable. Having pending variable
+    ///   level updates and using `assign_type` might make typechecking incorrect in some situation
+    ///   by unduely allowing unsound generalization. This is the responsibility of the caller.
+    pub fn assign_type(&mut self, var: VarId, uty: UnifType<'ast>) {
         // Unifying a free variable with itself is a no-op.
         if matches!(uty, UnifType::UnifVar { id, ..} if id == var) {
             return;
@@ -117,7 +114,12 @@ impl UnifTable {
     // Lazily propagate a variable level to the unification variables contained in `uty`. Either do
     // a direct update in constant time when possible, or push a stack of delayed updates for
     // composite types.
-    fn update_type_level(&mut self, var: VarId, uty: UnifType, new_level: VarLevel) -> UnifType {
+    fn update_type_level(
+        &mut self,
+        var: VarId,
+        uty: UnifType<'ast>,
+        new_level: VarLevel,
+    ) -> UnifType<'ast> {
         match uty {
             // We can do the update right away
             UnifType::UnifVar { id, init_level } => {
@@ -157,16 +159,15 @@ impl UnifTable {
     /// # Preconditions
     ///
     /// - This method doesn't check for the variable level conditions. This is the responsibility
-    /// of the caller.
+    ///   of the caller.
     /// - If the target type is a unification variable as well, it must not be assigned to another
-    /// unification type. That is, `assign` should always be passed a root type. Otherwise, the
-    /// handling of variable levels will be messed up.
+    ///   unification type. That is, `assign` should always be passed a root type. Otherwise, the
+    ///   handling of variable levels will be messed up.
     /// - This method doesn't force pending level updates when needed (calling to
-    /// `force_rrows_updates`), i.e.
-    /// when `uty` is a rigid type variable. Having pending variable level updates and using
-    /// `assign_type` might make typechecking incorrect in some situation by unduly allowing
-    /// unsound generalization. This is the responsibility of the caller.
-    pub fn assign_rrows(&mut self, var: VarId, rrows: UnifRecordRows) {
+    ///   `force_rrows_updates`), i.e. when `uty` is a rigid type variable. Having pending variable
+    ///   level updates and using `assign_type` might make typechecking incorrect in some situation
+    ///   by unduly allowing unsound generalization. This is the responsibility of the caller.
+    pub fn assign_rrows(&mut self, var: VarId, rrows: UnifRecordRows<'ast>) {
         // Unifying a free variable with itself is a no-op.
         if matches!(rrows, UnifRecordRows::UnifVar { id, ..} if id == var) {
             return;
@@ -178,7 +179,7 @@ impl UnifTable {
     }
 
     // cf `update_type_level()`
-    fn update_rrows_level(&mut self, var: VarId, uty: &UnifRecordRows, new_level: VarLevel) {
+    fn update_rrows_level(&mut self, var: VarId, uty: &UnifRecordRows<'ast>, new_level: VarLevel) {
         match uty {
             // We can do the update right away
             UnifRecordRows::UnifVar {
@@ -207,16 +208,15 @@ impl UnifTable {
     /// # Preconditions
     ///
     /// - This method doesn't check for the variable level conditions. This is the responsibility
-    /// of the caller.
+    ///   of the caller.
     /// - If the target type is a unification variable as well, it must not be assigned to another
-    /// unification type. That is, `assign` should always be passed a root type. Otherwise, the
-    /// handling of variable levels will be messed up.
+    ///   unification type. That is, `assign` should always be passed a root type. Otherwise, the
+    ///   handling of variable levels will be messed up.
     /// - This method doesn't force pending level updates when needed (calling to
-    /// `force_erows_updates`), i.e.
-    /// when `uty` is a rigid type variable. Having pending variable level updates and using
-    /// `assign_type` might make typechecking incorrect in some situation by unduly allowing
-    /// unsound generalization. This is the responsibility of the caller.
-    pub fn assign_erows(&mut self, var: VarId, erows: UnifEnumRows) {
+    ///   `force_erows_updates`), i.e. when `uty` is a rigid type variable. Having pending variable
+    ///   level updates and using `assign_type` might make typechecking incorrect in some situation
+    ///   by unduly allowing unsound generalization. This is the responsibility of the caller.
+    pub fn assign_erows(&mut self, var: VarId, erows: UnifEnumRows<'ast>) {
         // Unifying a free variable with itself is a no-op.
         if matches!(erows, UnifEnumRows::UnifVar { id, .. } if id == var) {
             return;
@@ -228,7 +228,7 @@ impl UnifTable {
     }
 
     // cf `update_type_level()`
-    fn update_erows_level(&mut self, var: VarId, uty: &UnifEnumRows, new_level: VarLevel) {
+    fn update_erows_level(&mut self, var: VarId, uty: &UnifEnumRows<'ast>, new_level: VarLevel) {
         match uty {
             // We can do the update right away
             UnifEnumRows::UnifVar {
@@ -250,7 +250,7 @@ impl UnifTable {
     }
 
     /// Retrieve the current assignment of a type unification variable.
-    pub fn get_type(&self, var: VarId) -> Option<&UnifType> {
+    pub fn get_type(&self, var: VarId) -> Option<&UnifType<'ast>> {
         self.types[var].value.as_ref()
     }
 
@@ -260,7 +260,7 @@ impl UnifTable {
     }
 
     /// Retrieve the current assignment of a record rows unification variable.
-    pub fn get_rrows(&self, var: VarId) -> Option<&UnifRecordRows> {
+    pub fn get_rrows(&self, var: VarId) -> Option<&UnifRecordRows<'ast>> {
         self.rrows[var].value.as_ref()
     }
 
@@ -271,7 +271,7 @@ impl UnifTable {
     }
 
     /// Retrieve the current assignment of an enum rows unification variable.
-    pub fn get_erows(&self, var: VarId) -> Option<&UnifEnumRows> {
+    pub fn get_erows(&self, var: VarId) -> Option<&UnifEnumRows<'ast>> {
         self.erows[var].value.as_ref()
     }
 
@@ -306,7 +306,7 @@ impl UnifTable {
     }
 
     /// Create a fresh type unification variable and allocate a corresponding slot in the table.
-    pub fn fresh_type_uvar(&mut self, current_level: VarLevel) -> UnifType {
+    pub fn fresh_type_uvar(&mut self, current_level: VarLevel) -> UnifType<'ast> {
         UnifType::UnifVar {
             id: self.fresh_type_var_id(current_level),
             init_level: current_level,
@@ -315,7 +315,7 @@ impl UnifTable {
 
     /// Create a fresh record rows unification variable and allocate a corresponding slot in the
     /// table.
-    pub fn fresh_rrows_uvar(&mut self, current_level: VarLevel) -> UnifRecordRows {
+    pub fn fresh_rrows_uvar(&mut self, current_level: VarLevel) -> UnifRecordRows<'ast> {
         UnifRecordRows::UnifVar {
             id: self.fresh_rrows_var_id(current_level),
             init_level: current_level,
@@ -324,7 +324,7 @@ impl UnifTable {
 
     /// Create a fresh enum rows unification variable and allocate a corresponding slot in the
     /// table.
-    pub fn fresh_erows_uvar(&mut self, current_level: VarLevel) -> UnifEnumRows {
+    pub fn fresh_erows_uvar(&mut self, current_level: VarLevel) -> UnifEnumRows<'ast> {
         UnifEnumRows::UnifVar {
             id: self.fresh_erows_var_id(current_level),
             init_level: current_level,
@@ -332,17 +332,17 @@ impl UnifTable {
     }
 
     /// Create a fresh type constant and allocate a corresponding slot in the table.
-    pub fn fresh_type_const(&mut self, current_level: VarLevel) -> UnifType {
+    pub fn fresh_type_const(&mut self, current_level: VarLevel) -> UnifType<'ast> {
         UnifType::Constant(self.fresh_type_var_id(current_level))
     }
 
     /// Create a fresh record rows constant and allocate a corresponding slot in the table.
-    pub fn fresh_rrows_const(&mut self, current_level: VarLevel) -> UnifRecordRows {
+    pub fn fresh_rrows_const(&mut self, current_level: VarLevel) -> UnifRecordRows<'ast> {
         UnifRecordRows::Constant(self.fresh_rrows_var_id(current_level))
     }
 
     /// Create a fresh enum rows constant and allocate a corresponding slot in the table.
-    pub fn fresh_erows_const(&mut self, current_level: VarLevel) -> UnifEnumRows {
+    pub fn fresh_erows_const(&mut self, current_level: VarLevel) -> UnifEnumRows<'ast> {
         UnifEnumRows::Constant(self.fresh_erows_var_id(current_level))
     }
 
@@ -351,7 +351,7 @@ impl UnifTable {
     ///
     /// This corresponds to the find in union-find.
     // TODO This should be a union find like algorithm
-    pub fn root_type(&self, var_id: VarId, init_level: VarLevel) -> UnifType {
+    pub fn root_type(&self, var_id: VarId, init_level: VarLevel) -> UnifType<'ast> {
         // All queried variable must have been introduced by `new_var` and thus a corresponding
         // entry must always exist in `state`. If not, the typechecking algorithm is not correct,
         // and we panic.
@@ -370,7 +370,7 @@ impl UnifTable {
     ///
     /// This corresponds to the find in union-find.
     // TODO This should be a union find like algorithm
-    pub fn root_rrows(&self, var_id: VarId, init_level: VarLevel) -> UnifRecordRows {
+    pub fn root_rrows(&self, var_id: VarId, init_level: VarLevel) -> UnifRecordRows<'ast> {
         // All queried variable must have been introduced by `new_var` and thus a corresponding
         // entry must always exist in `state`. If not, the typechecking algorithm is not correct,
         // and we panic.
@@ -389,7 +389,7 @@ impl UnifTable {
     ///
     /// This corresponds to the find in union-find.
     // TODO This should be a union find like algorithm
-    pub fn root_erows(&self, var_id: VarId, init_level: VarLevel) -> UnifEnumRows {
+    pub fn root_erows(&self, var_id: VarId, init_level: VarLevel) -> UnifEnumRows<'ast> {
         // All queried variable must have been introduced by `new_var` and thus a corresponding
         // entry must always exist in `state`. If not, the typechecking algorithm is not correct,
         // and we panic.
@@ -433,24 +433,25 @@ impl UnifTable {
     ///   wouldn't change the outcome of the unfication, which we can keep for later forced
     ///   updates.
     fn force_type_updates(&mut self, constant_level: VarLevel) {
-        fn update_unr_with_lvl(
-            table: &mut UnifTable,
-            uty: UnifTypeUnrolling,
+        fn update_unr_with_lvl<'ast>(
+            table: &mut UnifTable<'ast>,
+            uty: UnifTypeUnr<'ast>,
             level: VarLevel,
-        ) -> UnifTypeUnrolling {
+        ) -> UnifTypeUnr<'ast> {
             uty.map_state(
                 |uty, table| Box::new(update_utype_with_lvl(table, *uty, level)),
                 |rrows, table| update_rrows_with_lvl(table, rrows, level),
                 |erows, table| update_erows_with_lvl(table, erows, level),
+                |ctr, _| ctr,
                 table,
             )
         }
 
-        fn update_rrows_with_lvl(
-            table: &mut UnifTable,
-            rrows: UnifRecordRows,
+        fn update_rrows_with_lvl<'ast>(
+            table: &mut UnifTable<'ast>,
+            rrows: UnifRecordRows<'ast>,
             level: VarLevel,
-        ) -> UnifRecordRows {
+        ) -> UnifRecordRows<'ast> {
             let rrows = rrows.into_root(table);
 
             match rrows {
@@ -464,7 +465,7 @@ impl UnifTable {
                         table,
                     );
 
-                    // [^var-level-kinds]: Note that for `UnifRecordRows` (and for enum rows as
+                    // [^var-level-kinds]: Note that for `UnifRecordRows<'ast>` (and for enum rows as
                     // well), the variable levels data are concerned with record rows unification
                     // variables, not type unification variable. We thus let them untouched, as
                     // updating record rows variable levels is an orthogonal concern.
@@ -477,11 +478,11 @@ impl UnifTable {
             }
         }
 
-        fn update_erows_with_lvl(
-            table: &mut UnifTable,
-            erows: UnifEnumRows,
+        fn update_erows_with_lvl<'ast>(
+            table: &mut UnifTable<'ast>,
+            erows: UnifEnumRows<'ast>,
             level: VarLevel,
-        ) -> UnifEnumRows {
+        ) -> UnifEnumRows<'ast> {
             let erows = erows.into_root(table);
 
             match erows {
@@ -505,11 +506,11 @@ impl UnifTable {
             }
         }
 
-        fn update_utype_with_lvl(
-            table: &mut UnifTable,
-            uty: UnifType,
+        fn update_utype_with_lvl<'ast>(
+            table: &mut UnifTable<'ast>,
+            uty: UnifType<'ast>,
             level: VarLevel,
-        ) -> UnifType {
+        ) -> UnifType<'ast> {
             let uty = uty.into_root(table);
 
             match uty {
@@ -538,15 +539,15 @@ impl UnifTable {
                         },
                     }
                 }
-                UnifType::Constant(_) | UnifType::Contract(..) | UnifType::Concrete { .. } => uty,
+                UnifType::Constant(_) | UnifType::Concrete { .. } => uty,
             }
         }
 
-        fn update_utype(
-            table: &mut UnifTable,
-            uty: UnifType,
+        fn update_utype<'ast>(
+            table: &mut UnifTable<'ast>,
+            uty: UnifType<'ast>,
             constant_level: VarLevel,
-        ) -> (UnifType, bool) {
+        ) -> (UnifType<'ast>, bool) {
             match uty {
                 UnifType::UnifVar { .. } => {
                     // We should never end up updating the level of a type variable, as this update
@@ -616,9 +617,7 @@ impl UnifTable {
                 //
                 // Note that this type might still contain other pending updates deeper inside, but
                 // those are registered as pending updates and will be processed in any case.
-                UnifType::Constant(_) | UnifType::Contract(..) | UnifType::Concrete { .. } => {
-                    (uty, false)
-                }
+                UnifType::Constant(_) | UnifType::Concrete { .. } => (uty, false),
             }
         }
 
@@ -642,11 +641,11 @@ impl UnifTable {
     /// See `force_type_updates`. Same as `force_type_updates`, but when unifying a record row
     /// unification variable.
     pub fn force_rrows_updates(&mut self, constant_level: VarLevel) {
-        fn update_rrows_unr_with_lvl(
-            table: &mut UnifTable,
-            rrows: UnifRecordRowsUnrolling,
+        fn update_rrows_unr_with_lvl<'ast>(
+            table: &mut UnifTable<'ast>,
+            rrows: UnifRecordRowsUnr<'ast>,
             level: VarLevel,
-        ) -> UnifRecordRowsUnrolling {
+        ) -> UnifRecordRowsUnr<'ast> {
             rrows.map_state(
                 |uty, table| Box::new(update_utype_with_lvl(table, *uty, level)),
                 |rrows, table| Box::new(update_rrows_with_lvl(table, *rrows, level)),
@@ -654,11 +653,11 @@ impl UnifTable {
             )
         }
 
-        fn update_erows_unr_with_lvl(
-            table: &mut UnifTable,
-            erows: UnifEnumRowsUnrolling,
+        fn update_erows_unr_with_lvl<'ast>(
+            table: &mut UnifTable<'ast>,
+            erows: UnifEnumRowsUnr<'ast>,
             level: VarLevel,
-        ) -> UnifEnumRowsUnrolling {
+        ) -> UnifEnumRowsUnr<'ast> {
             erows.map_state(
                 |uty, table| Box::new(update_utype_with_lvl(table, *uty, level)),
                 |erows, table| Box::new(update_erows_with_lvl(table, *erows, level)),
@@ -666,11 +665,11 @@ impl UnifTable {
             )
         }
 
-        fn update_utype_with_lvl(
-            table: &mut UnifTable,
-            utype: UnifType,
+        fn update_utype_with_lvl<'ast>(
+            table: &mut UnifTable<'ast>,
+            utype: UnifType<'ast>,
             level: VarLevel,
-        ) -> UnifType {
+        ) -> UnifType<'ast> {
             let utype = utype.into_root(table);
 
             match utype {
@@ -682,6 +681,7 @@ impl UnifTable {
                         |uty, table| Box::new(update_utype_with_lvl(table, *uty, level)),
                         |rrows, table| update_rrows_with_lvl(table, rrows, level),
                         |erows, table| update_erows_with_lvl(table, erows, level),
+                        |ctr, _| ctr,
                         table,
                     );
 
@@ -691,15 +691,15 @@ impl UnifTable {
                         var_levels_data,
                     }
                 }
-                UnifType::UnifVar { .. } | UnifType::Constant(_) | UnifType::Contract(..) => utype,
+                UnifType::UnifVar { .. } | UnifType::Constant(_) => utype,
             }
         }
 
-        fn update_rrows_with_lvl(
-            table: &mut UnifTable,
-            rrows: UnifRecordRows,
+        fn update_rrows_with_lvl<'ast>(
+            table: &mut UnifTable<'ast>,
+            rrows: UnifRecordRows<'ast>,
             level: VarLevel,
-        ) -> UnifRecordRows {
+        ) -> UnifRecordRows<'ast> {
             let rrows = rrows.into_root(table);
 
             match rrows {
@@ -732,11 +732,11 @@ impl UnifTable {
             }
         }
 
-        fn update_erows_with_lvl(
-            table: &mut UnifTable,
-            erows: UnifEnumRows,
+        fn update_erows_with_lvl<'ast>(
+            table: &mut UnifTable<'ast>,
+            erows: UnifEnumRows<'ast>,
             level: VarLevel,
-        ) -> UnifEnumRows {
+        ) -> UnifEnumRows<'ast> {
             let erows = erows.into_root(table);
 
             match erows {
@@ -756,11 +756,11 @@ impl UnifTable {
             }
         }
 
-        fn update_rrows(
-            table: &mut UnifTable,
-            rrows: UnifRecordRows,
+        fn update_rrows<'ast>(
+            table: &mut UnifTable<'ast>,
+            rrows: UnifRecordRows<'ast>,
             constant_level: VarLevel,
-        ) -> (UnifRecordRows, bool) {
+        ) -> (UnifRecordRows<'ast>, bool) {
             match rrows {
                 UnifRecordRows::UnifVar { .. } => {
                     // We should never end up updating the level of a unification variable, as this
@@ -833,11 +833,11 @@ impl UnifTable {
     /// See `force_type_updates`. Same as `force_type_updates`, but when unifying an enum row
     /// unification variable.
     pub fn force_erows_updates(&mut self, constant_level: VarLevel) {
-        fn update_rrows_unr_with_lvl(
-            table: &mut UnifTable,
-            rrows: UnifRecordRowsUnrolling,
+        fn update_rrows_unr_with_lvl<'ast>(
+            table: &mut UnifTable<'ast>,
+            rrows: UnifRecordRowsUnr<'ast>,
             level: VarLevel,
-        ) -> UnifRecordRowsUnrolling {
+        ) -> UnifRecordRowsUnr<'ast> {
             rrows.map_state(
                 |uty, table| Box::new(update_utype_with_lvl(table, *uty, level)),
                 |rrows, table| Box::new(update_rrows_with_lvl(table, *rrows, level)),
@@ -845,11 +845,11 @@ impl UnifTable {
             )
         }
 
-        fn update_erows_unr_with_lvl(
-            table: &mut UnifTable,
-            erows: UnifEnumRowsUnrolling,
+        fn update_erows_unr_with_lvl<'ast>(
+            table: &mut UnifTable<'ast>,
+            erows: UnifEnumRowsUnr<'ast>,
             level: VarLevel,
-        ) -> UnifEnumRowsUnrolling {
+        ) -> UnifEnumRowsUnr<'ast> {
             erows.map_state(
                 |uty, table| Box::new(update_utype_with_lvl(table, *uty, level)),
                 |erows, table| Box::new(update_erows_with_lvl(table, *erows, level)),
@@ -857,11 +857,11 @@ impl UnifTable {
             )
         }
 
-        fn update_utype_with_lvl(
-            table: &mut UnifTable,
-            utype: UnifType,
+        fn update_utype_with_lvl<'ast>(
+            table: &mut UnifTable<'ast>,
+            utype: UnifType<'ast>,
             level: VarLevel,
-        ) -> UnifType {
+        ) -> UnifType<'ast> {
             let utype = utype.into_root(table);
 
             match utype {
@@ -873,6 +873,7 @@ impl UnifTable {
                         |uty, table| Box::new(update_utype_with_lvl(table, *uty, level)),
                         |rrows, table| update_rrows_with_lvl(table, rrows, level),
                         |erows, table| update_erows_with_lvl(table, erows, level),
+                        |ctr, _| ctr,
                         table,
                     );
 
@@ -882,15 +883,15 @@ impl UnifTable {
                         var_levels_data,
                     }
                 }
-                UnifType::UnifVar { .. } | UnifType::Constant(_) | UnifType::Contract(..) => utype,
+                UnifType::UnifVar { .. } | UnifType::Constant(_) => utype,
             }
         }
 
-        fn update_rrows_with_lvl(
-            table: &mut UnifTable,
-            rrows: UnifRecordRows,
+        fn update_rrows_with_lvl<'ast>(
+            table: &mut UnifTable<'ast>,
+            rrows: UnifRecordRows<'ast>,
             level: VarLevel,
-        ) -> UnifRecordRows {
+        ) -> UnifRecordRows<'ast> {
             let rrows = rrows.into_root(table);
 
             match rrows {
@@ -910,11 +911,11 @@ impl UnifTable {
             }
         }
 
-        fn update_erows_with_lvl(
-            table: &mut UnifTable,
-            erows: UnifEnumRows,
+        fn update_erows_with_lvl<'ast>(
+            table: &mut UnifTable<'ast>,
+            erows: UnifEnumRows<'ast>,
             level: VarLevel,
-        ) -> UnifEnumRows {
+        ) -> UnifEnumRows<'ast> {
             let erows = erows.into_root(table);
 
             match erows {
@@ -947,11 +948,11 @@ impl UnifTable {
             }
         }
 
-        fn update_erows(
-            table: &mut UnifTable,
-            erows: UnifEnumRows,
+        fn update_erows<'ast>(
+            table: &mut UnifTable<'ast>,
+            erows: UnifEnumRows<'ast>,
             constant_level: VarLevel,
-        ) -> (UnifEnumRows, bool) {
+        ) -> (UnifEnumRows<'ast>, bool) {
             match erows {
                 UnifEnumRows::UnifVar { .. } => {
                     // We should never end up updating the level of a unification variable, as this
@@ -1043,7 +1044,7 @@ impl UnifTable {
 /// the map to be rather sparse, we use a `HashMap` instead of a `Vec`.
 pub type RowConstrs = HashMap<VarId, HashSet<Ident>>;
 
-trait PropagateConstrs {
+pub(super) trait PropagateConstrs<'ast> {
     /// Check that unifying a variable with a type doesn't violate rows constraints, and update the
     /// row constraints of the unified type accordingly if needed.
     ///
@@ -1060,22 +1061,25 @@ trait PropagateConstrs {
     ///    don't constrain `u`, `u` could be unified later with a row type `{a : String}` which violates
     ///    the original constraint on `p`. Thus, when unifying `p` with `u` or a row ending with `u`,
     ///    `u` must inherit all the constraints of `p`.
-    fn propagate_constrs(&self, constr: &mut RowConstrs, var_id: VarId)
-        -> Result<(), RowUnifError>;
-}
-
-impl PropagateConstrs for UnifRecordRows {
     fn propagate_constrs(
         &self,
         constr: &mut RowConstrs,
         var_id: VarId,
-    ) -> Result<(), RowUnifError> {
-        fn propagate(
+    ) -> Result<(), RowUnifError<'ast>>;
+}
+
+impl<'ast> PropagateConstrs<'ast> for UnifRecordRows<'ast> {
+    fn propagate_constrs(
+        &self,
+        constr: &mut RowConstrs,
+        var_id: VarId,
+    ) -> Result<(), RowUnifError<'ast>> {
+        fn propagate<'ast>(
             constr: &mut RowConstrs,
             var_id: VarId,
             var_constr: HashSet<Ident>,
-            rrows: &UnifRecordRows,
-        ) -> Result<(), RowUnifError> {
+            rrows: &UnifRecordRows<'ast>,
+        ) -> Result<(), RowUnifError<'ast>> {
             match rrows {
                 UnifRecordRows::Concrete {
                     rrows: RecordRowsF::Extend { row, .. },
@@ -1108,18 +1112,18 @@ impl PropagateConstrs for UnifRecordRows {
     }
 }
 
-impl PropagateConstrs for UnifEnumRows {
+impl<'ast> PropagateConstrs<'ast> for UnifEnumRows<'ast> {
     fn propagate_constrs(
         &self,
         constr: &mut RowConstrs,
         var_id: VarId,
-    ) -> Result<(), RowUnifError> {
-        fn propagate(
+    ) -> Result<(), RowUnifError<'ast>> {
+        fn propagate<'ast>(
             constr: &mut RowConstrs,
             var_id: VarId,
             var_constr: HashSet<Ident>,
-            erows: &UnifEnumRows,
-        ) -> Result<(), RowUnifError> {
+            erows: &UnifEnumRows<'ast>,
+        ) -> Result<(), RowUnifError<'ast>> {
             match erows {
                 UnifEnumRows::Concrete {
                     // If the row is an enum tag (ie `typ` is `None`), it can't cause any conflict.
@@ -1163,18 +1167,36 @@ impl PropagateConstrs for UnifEnumRows {
 }
 
 /// Types which can be unified.
-pub(super) trait Unify {
+pub(super) trait Unify<'ast> {
     type Error;
 
     /// Try to unify two types. Unification corresponds to imposing an equality constraints on
     /// those types. This can fail if the types can't be matched.
-    fn unify(self, t2: Self, state: &mut State, ctxt: &Context) -> Result<(), Self::Error>;
+    ///
+    /// While unification is symmetric in principle, we make a difference in Nickel between the
+    /// expected type (coming from the context, from annotations, etc.) and the inferred type,
+    /// corresponding to the type of the expression as determined by its shape or other intrinsic
+    /// properties. Note that "inferred" here doesn't really map precisely to the bidirectional
+    /// typechecking vocabulary used elsewhere in the typechecker.
+    ///
+    /// Here, `self` is the expected type, and `t2` is the inferred type.
+    fn unify(
+        self,
+        t2: Self,
+        state: &mut State<'ast, '_>,
+        ctxt: &Context<'ast>,
+    ) -> Result<(), Self::Error>;
 }
 
-impl Unify for UnifType {
-    type Error = UnifError;
+impl<'ast> Unify<'ast> for UnifType<'ast> {
+    type Error = UnifError<'ast>;
 
-    fn unify(self, t2: UnifType, state: &mut State, ctxt: &Context) -> Result<(), UnifError> {
+    fn unify(
+        self,
+        t2: UnifType<'ast>,
+        state: &mut State<'ast, '_>,
+        ctxt: &Context<'ast>,
+    ) -> Result<(), UnifError<'ast>> {
         let t1 = self.into_root(state.table);
         let t2 = t2.into_root(state.table);
 
@@ -1230,8 +1252,10 @@ impl Unify for UnifType {
                             cause: Box::new(err),
                         })
                 }
-                (TypeF::Flat(expected), TypeF::Flat(inferred)) => {
-                    Err(UnifError::IncomparableFlatTypes { expected, inferred })
+                (TypeF::Contract((t1, env1)), TypeF::Contract((t2, env2)))
+                    if t1.type_eq(t2, &env1, &env2) =>
+                {
+                    Ok(())
                 }
                 (TypeF::Enum(erows1), TypeF::Enum(erows2)) => erows1
                     .clone()
@@ -1335,30 +1359,19 @@ impl Unify for UnifType {
                     inferred: ty,
                 })
             }
-            (UnifType::Contract(t1, env1), UnifType::Contract(t2, env2))
-                if eq::contract_eq(state.table.max_uvars_count(), &t1, &env1, &t2, &env2) =>
-            {
-                Ok(())
-            }
-            (uty1 @ UnifType::Contract(..), uty2) | (uty1, uty2 @ UnifType::Contract(..)) => {
-                Err(UnifError::TypeMismatch {
-                    expected: uty1,
-                    inferred: uty2,
-                })
-            }
         }
     }
 }
 
-impl Unify for UnifEnumRows {
-    type Error = RowUnifError;
+impl<'ast> Unify<'ast> for UnifEnumRows<'ast> {
+    type Error = RowUnifError<'ast>;
 
     fn unify(
         self,
-        uerows2: UnifEnumRows,
-        state: &mut State,
-        ctxt: &Context,
-    ) -> Result<(), RowUnifError> {
+        uerows2: UnifEnumRows<'ast>,
+        state: &mut State<'ast, '_>,
+        ctxt: &Context<'ast>,
+    ) -> Result<(), RowUnifError<'ast>> {
         let uerows1 = self.into_root(state.table);
         let uerows2 = uerows2.into_root(state.table);
 
@@ -1471,15 +1484,15 @@ impl Unify for UnifEnumRows {
     }
 }
 
-impl Unify for UnifRecordRows {
-    type Error = RowUnifError;
+impl<'ast> Unify<'ast> for UnifRecordRows<'ast> {
+    type Error = RowUnifError<'ast>;
 
     fn unify(
         self,
-        urrows2: UnifRecordRows,
-        state: &mut State,
-        ctxt: &Context,
-    ) -> Result<(), RowUnifError> {
+        urrows2: UnifRecordRows<'ast>,
+        state: &mut State<'ast, '_>,
+        ctxt: &Context<'ast>,
+    ) -> Result<(), RowUnifError<'ast>> {
         let urrows1 = self.into_root(state.table);
         let urrows2 = urrows2.into_root(state.table);
 
@@ -1599,7 +1612,7 @@ impl Unify for UnifRecordRows {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum RemoveRowError {
+pub(super) enum RemoveRowError {
     // The row to add was missing and the row type was closed (no free unification variable in tail
     // position).
     Missing,
@@ -1613,7 +1626,7 @@ pub enum RemoveRowResult<RowContent: Clone> {
     Extended,
 }
 
-trait RemoveRow: Sized {
+pub(super) trait RemoveRow<'ast>: Sized {
     /// The row data minus the identifier.
     type RowContent: Clone;
 
@@ -1621,6 +1634,7 @@ trait RemoveRow: Sized {
     /// the original row type without the found row.
     ///
     /// If the searched row isn't found:
+    ///
     /// - If the row type is extensible, i.e. it ends with a free unification variable in tail
     ///   position, this function adds the missing row (with `row.types` as a type for record rows,
     ///   if allowed by row constraints) and then acts as if `remove_row` was called again on
@@ -1636,12 +1650,12 @@ trait RemoveRow: Sized {
     ///
     /// For those to unify, we must have either:
     ///
-    ///  - `r1` is somewhere in `tail2`, and `tail1` unifies with `{..tail2'}` where `tail2'` is
-    ///  `tail2` without `r1`.
-    ///  - `tail2` is extensible, in which case we can extend `tail2` with `r1`, assuming that
-    ///  `tail1` unifies with `{..tail2'}`, where `tail2'` is `tail2` after extending with `r1` and
-    ///  then removing it. Modulo fresh unification variable shuffling, `tail2'` is in fact
-    ///  isomorphic to `tail2` before it was extended.
+    /// - `r1` is somewhere in `tail2`, and `tail1` unifies with `{..tail2'}` where `tail2'` is
+    ///   `tail2` without `r1`.
+    /// - `tail2` is extensible, in which case we can extend `tail2` with `r1`, assuming that
+    ///   `tail1` unifies with `{..tail2'}`, where `tail2'` is `tail2` after extending with `r1`
+    ///   and then removing it. Modulo fresh unification variable shuffling, `tail2'` is in fact
+    ///   isomorphic to `tail2` before it was extended.
     ///
     /// When we unify two row types, we destructure the left hand side to extract the head `r1` and
     /// the tail `tail1`. Then, we try to find and extract `r1` from `tail2`. If `r1` was found, we
@@ -1667,21 +1681,21 @@ trait RemoveRow: Sized {
         self,
         row_id: &LocIdent,
         row_content: &Self::RowContent,
-        state: &mut State,
+        state: &mut State<'ast, '_>,
         var_level: VarLevel,
     ) -> Result<(RemoveRowResult<Self::RowContent>, Self), RemoveRowError>;
 }
 
-impl RemoveRow for UnifRecordRows {
-    type RowContent = UnifType;
+impl<'ast> RemoveRow<'ast> for UnifRecordRows<'ast> {
+    type RowContent = UnifType<'ast>;
 
     fn remove_row(
         self,
         target: &LocIdent,
         target_content: &Self::RowContent,
-        state: &mut State,
+        state: &mut State<'ast, '_>,
         var_level: VarLevel,
-    ) -> Result<(RemoveRowResult<Self::RowContent>, UnifRecordRows), RemoveRowError> {
+    ) -> Result<(RemoveRowResult<Self::RowContent>, UnifRecordRows<'ast>), RemoveRowError> {
         let rrows = self.into_root(state.table);
 
         match rrows {
@@ -1743,16 +1757,16 @@ impl RemoveRow for UnifRecordRows {
     }
 }
 
-impl RemoveRow for UnifEnumRows {
-    type RowContent = Option<UnifType>;
+impl<'ast> RemoveRow<'ast> for UnifEnumRows<'ast> {
+    type RowContent = Option<UnifType<'ast>>;
 
     fn remove_row(
         self,
         target: &LocIdent,
         target_content: &Self::RowContent,
-        state: &mut State,
+        state: &mut State<'ast, '_>,
         var_level: VarLevel,
-    ) -> Result<(RemoveRowResult<Self::RowContent>, UnifEnumRows), RemoveRowError> {
+    ) -> Result<(RemoveRowResult<Self::RowContent>, UnifEnumRows<'ast>), RemoveRowError> {
         let uerows = self.into_root(state.table);
 
         match uerows {

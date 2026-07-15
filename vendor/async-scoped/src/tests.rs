@@ -9,7 +9,7 @@ macro_rules! test_fixtures {
 }
 
 cfg_async_std! {
-    use crate::AsyncScope as Scope;
+    use crate::AsyncStdScope as Scope;
 
     fn future_value<T>(v: T) -> T {
         v
@@ -78,7 +78,7 @@ test_fixtures! {
         let stream = unsafe {
             use async_std::future::{timeout, pending};
             use std::time::Duration;
-            let mut s = Scope::create();
+            let mut s = Scope::create(Default::default());
             for _ in 0..10 {
                 let proc = || async move {
                     assert_eq!(not_copy_ref, "hello world!");
@@ -254,7 +254,7 @@ test_fixtures! {
     // This test is resource consuming and ignored by default
     #[ignore]
     async fn backpressure() {
-        let mut s = unsafe { Scope::create() };
+        let mut s = unsafe { Scope::create(Default::default()) };
         let limit = 0x10;
         for i in 0..0x100 {
             s.spawn(async {
@@ -325,6 +325,35 @@ test_fixtures! {
         assert_eq!(nth(input).await, input);
     }
 
+    async fn test_ordered_collect() {
+        use std::future::pending;
+        const N: u64 = 10;
+
+        let (_, r) = Scope::scope_and_block(|scope| {
+            for i in 0..N {
+                scope.spawn(async move {
+                    let _ = async_std::future::timeout(
+                        std::time::Duration::from_millis(100 - i),
+                        pending::<()>()
+                    ).await;
+                    i
+                });
+            }
+        });
+        let r = r.into_iter().map(|v| {
+            #[cfg(feature = "use-tokio")]
+            {
+                v.unwrap()
+            }
+
+            #[cfg(feature = "use-async-std")]
+            {
+                v
+            }
+        }).collect::<Vec<_>>();
+
+        assert_eq!((0..N).into_iter().collect::<Vec<_>>(), r);
+    }
 }
 
 #[cfg(feature = "use-tokio")]
@@ -355,4 +384,30 @@ async fn test_async_deadlock_tokio() {
     // us recurse without deadlocks.
     let input = 200;
     assert_eq!(nth(input).await, input);
+}
+
+/// Dropping an empty scope should be a no-op.
+#[test]
+fn test_empty_scope() {
+    use crate::spawner::{Blocker, Spawner};
+    use std::future::Future;
+
+    struct PanickingSpawner;
+
+    unsafe impl<T: Send + 'static> Spawner<T> for PanickingSpawner {
+        type FutureOutput = T;
+        type SpawnHandle = futures::future::Ready<T>;
+
+        fn spawn<F: Future<Output = T> + Send + 'static>(&self, _f: F) -> Self::SpawnHandle {
+            panic!("spawn should never be called.");
+        }
+    }
+
+    unsafe impl Blocker for PanickingSpawner {
+        fn block_on<T, F: Future<Output = T>>(&self, _f: F) -> T {
+            panic!("block_on should never be called.");
+        }
+    }
+
+    let _ = unsafe { crate::Scope::<(), _>::create(PanickingSpawner) };
 }

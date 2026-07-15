@@ -3,7 +3,7 @@ use super::Logos;
 use crate::source::{self, Source};
 
 use core::fmt::{self, Debug};
-use core::mem::ManuallyDrop;
+use core::ops::{Deref, DerefMut};
 
 /// Byte range in the source.
 pub type Span = core::ops::Range<usize>;
@@ -12,7 +12,12 @@ pub type Span = core::ops::Range<usize>;
 /// `Source` and produce tokens for enums implementing the `Logos` trait.
 pub struct Lexer<'source, Token: Logos<'source>> {
     source: &'source Token::Source,
-    token: ManuallyDrop<Option<Token>>,
+
+    #[cfg(not(feature = "forbid_unsafe"))]
+    token: core::mem::ManuallyDrop<Option<Result<Token, Token::Error>>>,
+    #[cfg(feature = "forbid_unsafe")]
+    token: Option<Result<Token, Token::Error>>,
+
     token_start: usize,
     token_end: usize,
 
@@ -53,7 +58,7 @@ impl<'source, Token: Logos<'source>> Lexer<'source, Token> {
     pub fn with_extras(source: &'source Token::Source, extras: Token::Extras) -> Self {
         Lexer {
             source,
-            token: ManuallyDrop::new(None),
+            token: Default::default(),
             extras,
             token_start: 0,
             token_end: 0,
@@ -74,11 +79,30 @@ impl<'source, Token: Logos<'source>> Lexer<'source, Token> {
     /// ```
     /// use logos::Logos;
     ///
+    /// #[derive(Debug, PartialEq, Clone, Default)]
+    /// enum LexingError {
+    ///     NumberParseError,
+    ///     #[default]
+    ///     Other
+    /// }
+    ///
+    /// impl From<std::num::ParseIntError> for LexingError {
+    ///    fn from(_: std::num::ParseIntError) -> Self {
+    ///       LexingError::NumberParseError
+    ///   }
+    /// }
+    ///
+    /// impl From<std::num::ParseFloatError> for LexingError {
+    ///   fn from(_: std::num::ParseFloatError) -> Self {
+    ///      LexingError::NumberParseError
+    ///   }
+    /// }
+    ///
     /// #[derive(Logos, Debug, PartialEq)]
+    /// #[logos(error = LexingError)]
     /// enum Example {
     ///     #[regex(r"[ \n\t\f]+", logos::skip)]
-    ///     #[error]
-    ///     Error,
+    ///     Ignored,
     ///
     ///     #[regex("-?[0-9]+", |lex| lex.slice().parse())]
     ///     Integer(i64),
@@ -92,10 +116,10 @@ impl<'source, Token: Logos<'source>> Lexer<'source, Token> {
     /// assert_eq!(
     ///     tokens,
     ///     &[
-    ///         (Example::Integer(42), 0..2),
-    ///         (Example::Float(3.14), 3..7),
-    ///         (Example::Integer(-5), 8..10),
-    ///         (Example::Error, 11..12), // 'f' is not a recognized token
+    ///         (Ok(Example::Integer(42)), 0..2),
+    ///         (Ok(Example::Float(3.14)), 3..7),
+    ///         (Ok(Example::Integer(-5)), 8..10),
+    ///         (Err(LexingError::Other), 11..12), // 'f' is not a recognized token
     ///     ],
     /// );
     /// ```
@@ -119,17 +143,34 @@ impl<'source, Token: Logos<'source>> Lexer<'source, Token> {
 
     /// Get a string slice of the current token.
     #[inline]
-    pub fn slice(&self) -> &'source <Token::Source as Source>::Slice {
-        unsafe { self.source.slice_unchecked(self.span()) }
+    pub fn slice(&self) -> <Token::Source as Source>::Slice<'source> {
+        // SAFETY: in bounds if `token_start` and `token_end` are in bounds.
+        // * `token_start` is initially zero and is set to `token_end` in `next`, so
+        //   it remains in bounds as long as `token_end` remains in bounds.
+        // * `token_end` is initially zero and is only incremented in `bump`. `bump`
+        //   will panic if `Source::is_boundary` is false.
+        // * Thus safety is contingent on the correct implementation of the `is_boundary`
+        //   method.
+        #[cfg(not(feature = "forbid_unsafe"))]
+        unsafe {
+            self.source.slice_unchecked(self.span())
+        }
+        #[cfg(feature = "forbid_unsafe")]
+        self.source.slice(self.span()).unwrap()
     }
 
     /// Get a slice of remaining source, starting at the end of current token.
     #[inline]
-    pub fn remainder(&self) -> &'source <Token::Source as Source>::Slice {
+    pub fn remainder(&self) -> <Token::Source as Source>::Slice<'source> {
+        #[cfg(not(feature = "forbid_unsafe"))]
         unsafe {
             self.source
                 .slice_unchecked(self.token_end..self.source.len())
         }
+        #[cfg(feature = "forbid_unsafe")]
+        self.source
+            .slice(self.token_end..self.source.len())
+            .unwrap()
     }
 
     /// Turn this lexer into a lexer for a new token type.
@@ -143,7 +184,7 @@ impl<'source, Token: Logos<'source>> Lexer<'source, Token> {
     {
         Lexer {
             source: self.source,
-            token: ManuallyDrop::new(None),
+            token: Default::default(),
             extras: self.extras.into(),
             token_start: self.token_start,
             token_end: self.token_end,
@@ -174,7 +215,7 @@ where
     fn clone(&self) -> Self {
         Lexer {
             extras: self.extras.clone(),
-            token: self.token.clone(),
+            token: Default::default(),
             ..*self
         }
     }
@@ -184,10 +225,10 @@ impl<'source, Token> Iterator for Lexer<'source, Token>
 where
     Token: Logos<'source>,
 {
-    type Item = Token;
+    type Item = Result<Token, Token::Error>;
 
     #[inline]
-    fn next(&mut self) -> Option<Token> {
+    fn next(&mut self) -> Option<Result<Token, Token::Error>> {
         self.token_start = self.token_end;
 
         Token::lex(self);
@@ -196,7 +237,14 @@ where
         // Since we always immediately return a newly set token here,
         // we don't have to replace it with `None` or manually drop
         // it later.
-        unsafe { ManuallyDrop::take(&mut self.token) }
+        #[cfg(not(feature = "forbid_unsafe"))]
+        unsafe {
+            core::mem::ManuallyDrop::take(&mut self.token)
+        }
+        #[cfg(feature = "forbid_unsafe")]
+        {
+            self.token.take()
+        }
     }
 }
 
@@ -207,21 +255,54 @@ pub struct SpannedIter<'source, Token: Logos<'source>> {
     lexer: Lexer<'source, Token>,
 }
 
+// deriving Clone doesn't infer the necessary `Token::Extras: Clone` bound
+impl<'source, Token> Clone for SpannedIter<'source, Token>
+where
+    Token: Logos<'source> + Clone,
+    Token::Extras: Clone,
+{
+    fn clone(&self) -> Self {
+        SpannedIter {
+            lexer: self.lexer.clone(),
+        }
+    }
+}
+
 impl<'source, Token> Iterator for SpannedIter<'source, Token>
 where
     Token: Logos<'source>,
 {
-    type Item = (Token, Span);
+    type Item = (Result<Token, Token::Error>, Span);
 
     fn next(&mut self) -> Option<Self::Item> {
         self.lexer.next().map(|token| (token, self.lexer.span()))
     }
 }
 
+impl<'source, Token> Deref for SpannedIter<'source, Token>
+where
+    Token: Logos<'source>,
+{
+    type Target = Lexer<'source, Token>;
+
+    fn deref(&self) -> &Lexer<'source, Token> {
+        &self.lexer
+    }
+}
+
+impl<'source, Token> DerefMut for SpannedIter<'source, Token>
+where
+    Token: Logos<'source>,
+{
+    fn deref_mut(&mut self) -> &mut Lexer<'source, Token> {
+        &mut self.lexer
+    }
+}
+
 #[doc(hidden)]
 /// # WARNING!
 ///
-/// **This trait, and it's methods, are not meant to be used outside of the
+/// **This trait, and its methods, are not meant to be used outside of the
 /// code produced by `#[derive(Logos)]` macro.**
 impl<'source, Token> LexerInternal<'source> for Lexer<'source, Token>
 where
@@ -249,11 +330,15 @@ where
     }
 
     #[inline]
-    unsafe fn read_unchecked<Chunk>(&self, n: usize) -> Chunk
-    where
-        Chunk: source::Chunk<'source>,
-    {
-        self.source.read_unchecked(self.token_end + n)
+    #[cfg(not(feature = "forbid_unsafe"))]
+    unsafe fn read_byte_unchecked(&self, n: usize) -> u8 {
+        self.source.read_byte_unchecked(self.token_end + n)
+    }
+
+    #[inline]
+    #[cfg(feature = "forbid_unsafe")]
+    fn read_byte(&self, n: usize) -> u8 {
+        self.source.read_byte(self.token_end + n)
     }
 
     /// Test a chunk at current position with a closure.
@@ -264,19 +349,6 @@ where
         F: FnOnce(T) -> bool,
     {
         match self.source.read::<T>(self.token_end) {
-            Some(chunk) => test(chunk),
-            None => false,
-        }
-    }
-
-    /// Test a chunk at current position offset by `n` with a closure.
-    #[inline]
-    fn test_at<T, F>(&self, n: usize, test: F) -> bool
-    where
-        T: source::Chunk<'source>,
-        F: FnOnce(T) -> bool,
-    {
-        match self.source.read::<T>(self.token_end + n) {
             Some(chunk) => test(chunk),
             None => false,
         }
@@ -304,16 +376,29 @@ where
     #[inline]
     fn error(&mut self) {
         self.token_end = self.source.find_boundary(self.token_end);
-        self.token = ManuallyDrop::new(Some(Token::ERROR));
+        Token::make_error(self);
     }
 
     #[inline]
     fn end(&mut self) {
-        self.token = ManuallyDrop::new(None);
+        self.token = Default::default();
     }
 
     #[inline]
-    fn set(&mut self, token: Token) {
-        self.token = ManuallyDrop::new(Some(token));
+    fn set(
+        &mut self,
+        token: Result<
+            Self::Token,
+            <<Self as LexerInternal<'source>>::Token as Logos<'source>>::Error,
+        >,
+    ) {
+        #[cfg(not(feature = "forbid_unsafe"))]
+        {
+            self.token = core::mem::ManuallyDrop::new(Some(token));
+        }
+        #[cfg(feature = "forbid_unsafe")]
+        {
+            self.token = Some(token)
+        }
     }
 }

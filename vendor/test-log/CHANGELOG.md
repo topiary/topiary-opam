@@ -1,3 +1,14 @@
+0.2.19
+------
+- Adjusted `tracing` output to log to `stderr`
+
+
+0.2.18
+------
+- Improved cooperation with other similar procedural macros to enable
+  attribute stacking
+
+
 0.2.17
 ------
 - Changed default log level to `INFO`

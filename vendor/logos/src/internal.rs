@@ -5,10 +5,10 @@ use crate::{Filter, FilterResult, Lexer, Logos, Skip};
 ///
 /// # WARNING!
 ///
-/// **This trait, and it's methods, are not meant to be used outside of the
+/// **This trait, and its methods, are not meant to be used outside of the
 /// code produced by `#[derive(Logos)]` macro.**
 pub trait LexerInternal<'source> {
-    type Token;
+    type Token: Logos<'source>;
 
     /// Read a chunk at current position.
     fn read<T: Chunk<'source>>(&self) -> Option<T>;
@@ -16,14 +16,16 @@ pub trait LexerInternal<'source> {
     /// Read a chunk at current position, offset by `n`.
     fn read_at<T: Chunk<'source>>(&self, n: usize) -> Option<T>;
 
-    /// Unchecked read a chunk at current position, offset by `n`.
-    unsafe fn read_unchecked<T: Chunk<'source>>(&self, n: usize) -> T;
+    /// Unchecked read a byte at current position, offset by `n`.
+    #[cfg(not(feature = "forbid_unsafe"))]
+    unsafe fn read_byte_unchecked(&self, n: usize) -> u8;
+
+    /// Checked read a byte at current position, offset by `n`.
+    #[cfg(feature = "forbid_unsafe")]
+    fn read_byte(&self, n: usize) -> u8;
 
     /// Test a chunk at current position with a closure.
     fn test<T: Chunk<'source>, F: FnOnce(T) -> bool>(&self, test: F) -> bool;
-
-    /// Test a chunk at current position offset by `n` with a closure.
-    fn test_at<T: Chunk<'source>, F: FnOnce(T) -> bool>(&self, n: usize, test: F) -> bool;
 
     /// Bump the position by `size`.
     fn bump_unchecked(&mut self, size: usize);
@@ -37,7 +39,13 @@ pub trait LexerInternal<'source> {
 
     fn end(&mut self);
 
-    fn set(&mut self, token: Self::Token);
+    fn set(
+        &mut self,
+        token: Result<
+            Self::Token,
+            <<Self as LexerInternal<'source>>::Token as Logos<'source>>::Error,
+        >,
+    );
 }
 
 pub trait CallbackResult<'s, P, T: Logos<'s>> {
@@ -46,13 +54,29 @@ pub trait CallbackResult<'s, P, T: Logos<'s>> {
         Constructor: Fn(P) -> T;
 }
 
+pub trait SkipCallbackResult<'s, T: Logos<'s>>
+where
+    Self: Sized,
+{
+    fn into_result(self) -> Result<Skip, T::Error>;
+    fn construct_skip(self, lex: &mut Lexer<'s, T>) {
+        match self.into_result() {
+            Ok(Skip) => {
+                lex.trivia();
+                T::lex(lex);
+            }
+            Err(e) => lex.set(Err(e)),
+        }
+    }
+}
+
 impl<'s, P, T: Logos<'s>> CallbackResult<'s, P, T> for P {
     #[inline]
     fn construct<Constructor>(self, c: Constructor, lex: &mut Lexer<'s, T>)
     where
         Constructor: Fn(P) -> T,
     {
-        lex.set(c(self))
+        lex.set(Ok(c(self)))
     }
 }
 
@@ -63,8 +87,8 @@ impl<'s, T: Logos<'s>> CallbackResult<'s, (), T> for bool {
         Constructor: Fn(()) -> T,
     {
         match self {
-            true => lex.set(c(())),
-            false => lex.set(T::ERROR),
+            true => lex.set(Ok(c(()))),
+            false => T::make_error(lex),
         }
     }
 }
@@ -76,21 +100,24 @@ impl<'s, P, T: Logos<'s>> CallbackResult<'s, P, T> for Option<P> {
         Constructor: Fn(P) -> T,
     {
         match self {
-            Some(product) => lex.set(c(product)),
-            None => lex.set(T::ERROR),
+            Some(product) => lex.set(Ok(c(product))),
+            None => T::make_error(lex),
         }
     }
 }
 
-impl<'s, P, E, T: Logos<'s>> CallbackResult<'s, P, T> for Result<P, E> {
+impl<'s, P, E, T: Logos<'s>> CallbackResult<'s, P, T> for Result<P, E>
+where
+    E: Into<T::Error>,
+{
     #[inline]
     fn construct<Constructor>(self, c: Constructor, lex: &mut Lexer<'s, T>)
     where
         Constructor: Fn(P) -> T,
     {
         match self {
-            Ok(product) => lex.set(c(product)),
-            Err(_) => lex.set(T::ERROR),
+            Ok(product) => lex.set(Ok(c(product))),
+            Err(err) => lex.set(Err(err.into())),
         }
     }
 }
@@ -106,6 +133,25 @@ impl<'s, T: Logos<'s>> CallbackResult<'s, (), T> for Skip {
     }
 }
 
+impl<'s, E, T: Logos<'s>> CallbackResult<'s, (), T> for Result<Skip, E>
+where
+    E: Into<T::Error>,
+{
+    #[inline]
+    fn construct<Constructor>(self, _: Constructor, lex: &mut Lexer<'s, T>)
+    where
+        Constructor: Fn(()) -> T,
+    {
+        match self {
+            Ok(_) => {
+                lex.trivia();
+                T::lex(lex);
+            }
+            Err(err) => lex.set(Err(err.into())),
+        }
+    }
+}
+
 impl<'s, P, T: Logos<'s>> CallbackResult<'s, P, T> for Filter<P> {
     #[inline]
     fn construct<Constructor>(self, c: Constructor, lex: &mut Lexer<'s, T>)
@@ -113,7 +159,7 @@ impl<'s, P, T: Logos<'s>> CallbackResult<'s, P, T> for Filter<P> {
         Constructor: Fn(P) -> T,
     {
         match self {
-            Filter::Emit(product) => lex.set(c(product)),
+            Filter::Emit(product) => lex.set(Ok(c(product))),
             Filter::Skip => {
                 lex.trivia();
                 T::lex(lex);
@@ -122,18 +168,112 @@ impl<'s, P, T: Logos<'s>> CallbackResult<'s, P, T> for Filter<P> {
     }
 }
 
-impl<'s, P, T: Logos<'s>> CallbackResult<'s, P, T> for FilterResult<P> {
+impl<'s, P, E, T: Logos<'s>> CallbackResult<'s, P, T> for FilterResult<P, E>
+where
+    E: Into<T::Error>,
+{
     fn construct<Constructor>(self, c: Constructor, lex: &mut Lexer<'s, T>)
     where
         Constructor: Fn(P) -> T,
     {
         match self {
-            FilterResult::Emit(product) => lex.set(c(product)),
+            FilterResult::Emit(product) => lex.set(Ok(c(product))),
             FilterResult::Skip => {
                 lex.trivia();
                 T::lex(lex);
             }
-            FilterResult::Error => lex.set(T::ERROR),
+            FilterResult::Error(err) => lex.set(Err(err.into())),
+        }
+    }
+}
+
+impl<'s, T: Logos<'s>> CallbackResult<'s, (), T> for T {
+    #[inline]
+    fn construct<Constructor>(self, _: Constructor, lex: &mut Lexer<'s, T>)
+    where
+        Constructor: Fn(()) -> T,
+    {
+        lex.set(Ok(self))
+    }
+}
+
+impl<'s, T: Logos<'s>> CallbackResult<'s, (), T> for Result<T, T::Error> {
+    #[inline]
+    fn construct<Constructor>(self, _: Constructor, lex: &mut Lexer<'s, T>)
+    where
+        Constructor: Fn(()) -> T,
+    {
+        match self {
+            Ok(product) => lex.set(Ok(product)),
+            Err(err) => lex.set(Err(err)),
+        }
+    }
+}
+
+impl<'s, T: Logos<'s>> CallbackResult<'s, (), T> for Filter<T> {
+    #[inline]
+    fn construct<Constructor>(self, _: Constructor, lex: &mut Lexer<'s, T>)
+    where
+        Constructor: Fn(()) -> T,
+    {
+        match self {
+            Filter::Emit(product) => lex.set(Ok(product)),
+            Filter::Skip => {
+                lex.trivia();
+                T::lex(lex);
+            }
+        }
+    }
+}
+
+impl<'s, T: Logos<'s>> CallbackResult<'s, (), T> for FilterResult<T, T::Error> {
+    fn construct<Constructor>(self, _: Constructor, lex: &mut Lexer<'s, T>)
+    where
+        Constructor: Fn(()) -> T,
+    {
+        match self {
+            FilterResult::Emit(product) => lex.set(Ok(product)),
+            FilterResult::Skip => {
+                lex.trivia();
+                T::lex(lex);
+            }
+            FilterResult::Error(err) => lex.set(Err(err)),
+        }
+    }
+}
+
+impl<'s, T: Logos<'s>> SkipCallbackResult<'s, T> for () {
+    fn into_result(self) -> Result<Skip, T::Error> {
+        Ok(Skip)
+    }
+}
+
+impl<'s, T: Logos<'s>> SkipCallbackResult<'s, T> for Skip {
+    fn into_result(self) -> Result<Skip, T::Error> {
+        Ok(self)
+    }
+}
+
+impl<'s, T: Logos<'s>, E> SkipCallbackResult<'s, T> for Result<(), E>
+where
+    E: Into<T::Error>,
+{
+    fn into_result(self) -> Result<Skip, T::Error> {
+        match self {
+            Ok(_) => Ok(Skip),
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
+impl<'s, T: Logos<'s>, E> SkipCallbackResult<'s, T> for Result<Skip, E>
+where
+    E: Into<T::Error>,
+{
+    fn into_result(self) -> Result<Skip, T::Error> {
+        match self {
+            Ok(skip) => Ok(skip),
+            Err(e) => Err(e.into()),
         }
     }
 }

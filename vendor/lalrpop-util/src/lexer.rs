@@ -1,4 +1,13 @@
-use std::{fmt, marker::PhantomData};
+#![doc(hidden)]
+//! The built-in lalrpop lexer
+//!
+//! This is the code for the built in lexer, and is linked by lalrpop generated parsers to provide
+//! lexer support when you don't write a custom lexer.
+//!
+//! Typically you don't want to use APIs from this module directly, they are public to be accessed
+//! by the generated parser.
+use alloc::{fmt, vec::Vec};
+use core::marker::PhantomData;
 
 use crate::ParseError;
 
@@ -10,8 +19,8 @@ use regex_automata::{Anchored, Input, MatchKind};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Token<'input>(pub usize, pub &'input str);
-impl<'a> fmt::Display for Token<'a> {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+impl fmt::Display for Token<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         fmt::Display::fmt(self.1, formatter)
     }
 }
@@ -78,7 +87,7 @@ pub struct Matcher<'input, 'builder, E> {
     _marker: PhantomData<fn() -> E>,
 }
 
-impl<'input, 'builder, E> Iterator for Matcher<'input, 'builder, E> {
+impl<'input, E> Iterator for Matcher<'input, '_, E> {
     type Item = Result<(usize, Token<'input>, usize), ParseError<usize, Token<'input>, E>>;
 
     fn next(&mut self) -> Option<Self::Item> {

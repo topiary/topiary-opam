@@ -7,7 +7,7 @@
 //! contents, but little is done to hide the differences in behaviour between platforms.
 //! The API documentation strives to document such differences as much as possible.
 //!
-//! Platform-specific APIs are also available in the [`os`](crate::os) module. These APIs are more
+//! Platform-specific APIs are also available in the [`os`] module. These APIs are more
 //! flexible, but less safe.
 //!
 //! # Installation
@@ -27,7 +27,7 @@
 //! fn call_dynamic() -> Result<u32, Box<dyn std::error::Error>> {
 //!     unsafe {
 //!         let lib = libloading::Library::new("/path/to/liblibrary.so")?;
-//!         let func: libloading::Symbol<unsafe extern fn() -> u32> = lib.get(b"my_func")?;
+//!         let func: libloading::Symbol<unsafe extern "C" fn() -> u32> = lib.get(b"my_func")?;
 //!         Ok(func())
 //!     }
 //! }
@@ -35,21 +35,34 @@
 //!
 //! The compiler will ensure that the loaded function will not outlive the `Library` from which it comes,
 //! preventing the most common memory-safety issues.
-#![cfg_attr(any(unix, windows), deny(missing_docs, clippy::all, unreachable_pub, unused))]
+#![cfg_attr(
+    any(unix, windows),
+    deny(missing_docs, clippy::all, unreachable_pub, unused)
+)]
 #![cfg_attr(libloading_docs, feature(doc_cfg))]
+#![no_std]
+
+extern crate alloc;
+#[cfg(feature = "std")]
+extern crate std;
+
+mod as_filename;
+mod as_symbol_name;
+
+pub use as_filename::AsFilename;
+pub use as_symbol_name::AsSymbolName;
 
 pub mod changelog;
-pub mod os;
-mod util;
 mod error;
+pub mod os;
 #[cfg(any(unix, windows, libloading_docs))]
 mod safe;
+mod util;
 
 pub use self::error::Error;
+
 #[cfg(any(unix, windows, libloading_docs))]
 pub use self::safe::{Library, Symbol};
-use std::env::consts::{DLL_PREFIX, DLL_SUFFIX};
-use std::ffi::{OsStr, OsString};
 
 /// Converts a library name to a filename generally appropriate for use on the system.
 ///
@@ -68,9 +81,14 @@ use std::ffi::{OsStr, OsString};
 ///     Library::new(library_filename("LLVM"))
 /// };
 /// ```
-pub fn library_filename<S: AsRef<OsStr>>(name: S) -> OsString {
+#[cfg(feature = "std")]
+#[cfg_attr(libloading_docs, doc(cfg(feature = "std")))]
+pub fn library_filename<S: AsRef<std::ffi::OsStr>>(name: S) -> std::ffi::OsString {
+    use std::env::consts::{DLL_PREFIX, DLL_SUFFIX};
+
     let name = name.as_ref();
-    let mut string = OsString::with_capacity(name.len() + DLL_PREFIX.len() + DLL_SUFFIX.len());
+    let mut string =
+        std::ffi::OsString::with_capacity(name.len() + DLL_PREFIX.len() + DLL_SUFFIX.len());
     string.push(DLL_PREFIX);
     string.push(name);
     string.push(DLL_SUFFIX);

@@ -1,4 +1,6 @@
 //! Error diagnostics reporting and serialization.
+use codespan_reporting::term::termcolor::{Ansi, NoColor};
+
 use super::*;
 
 /// Serializable wrapper type to export diagnostics with a top-level attribute.
@@ -14,7 +16,8 @@ impl From<Vec<Diagnostic<FileId>>> for DiagnosticsWrapper {
 }
 
 /// Available export formats for error diagnostics.
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Default, clap::ValueEnum)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 pub enum ErrorFormat {
     #[default]
     Text,
@@ -23,34 +26,20 @@ pub enum ErrorFormat {
     Toml,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct ColorOpt(pub(crate) clap::ColorChoice);
+pub type ColorOpt = colorchoice::ColorChoice;
 
-impl ColorOpt {
-    fn for_terminal(self, is_terminal: bool) -> ColorChoice {
-        match self.0 {
-            clap::ColorChoice::Auto => {
-                if is_terminal {
-                    ColorChoice::Auto
-                } else {
-                    ColorChoice::Never
-                }
+fn colors_for_terminal(color_opt: ColorOpt, is_terminal: bool) -> ColorChoice {
+    match color_opt {
+        colorchoice::ColorChoice::Auto => {
+            if is_terminal {
+                ColorChoice::Auto
+            } else {
+                ColorChoice::Never
             }
-            clap::ColorChoice::Always => ColorChoice::Always,
-            clap::ColorChoice::Never => ColorChoice::Never,
         }
-    }
-}
-
-impl From<clap::ColorChoice> for ColorOpt {
-    fn from(color_choice: clap::ColorChoice) -> Self {
-        Self(color_choice)
-    }
-}
-
-impl Default for ColorOpt {
-    fn default() -> Self {
-        Self(clap::ColorChoice::Auto)
+        colorchoice::ColorChoice::Always => ColorChoice::Always,
+        colorchoice::ColorChoice::AlwaysAnsi => ColorChoice::AlwaysAnsi,
+        colorchoice::ColorChoice::Never => ColorChoice::Never,
     }
 }
 
@@ -59,35 +48,76 @@ impl Default for ColorOpt {
 /// # Arguments
 ///
 /// - `cache` is the file cache used during the evaluation, which is required by the reporting
-/// infrastructure to point at specific locations and print snippets when needed.
-pub fn report<E: IntoDiagnostics<FileId>>(
-    cache: &mut Cache,
+///   infrastructure to point at specific locations and print snippets when needed.
+pub fn report<E: IntoDiagnostics>(
+    files: &mut Files,
     error: E,
     format: ErrorFormat,
     color_opt: ColorOpt,
 ) {
     use std::io::{stderr, IsTerminal};
 
-    let stdlib_ids = cache.get_all_stdlib_modules_file_id();
     report_with(
-        &mut StandardStream::stderr(color_opt.for_terminal(stderr().is_terminal())).lock(),
-        cache.files_mut(),
-        stdlib_ids.as_ref(),
+        &mut StandardStream::stderr(colors_for_terminal(color_opt, stderr().is_terminal())).lock(),
+        files,
         error,
         format,
     )
 }
 
+/// Pretty-print an error on stdout.
+///
+/// # Arguments
+///
+/// - `cache` is the file cache used during the evaluation, which is required by the reporting
+///   infrastructure to point at specific locations and print snippets when needed.
+pub fn report_to_stdout<E: IntoDiagnostics>(
+    files: &mut Files,
+    error: E,
+    format: ErrorFormat,
+    color_opt: ColorOpt,
+) {
+    use std::io::{stdout, IsTerminal};
+
+    report_with(
+        &mut StandardStream::stdout(colors_for_terminal(color_opt, stdout().is_terminal())).lock(),
+        files,
+        error,
+        format,
+    )
+}
+
+/// Build an error report as a string and return it.
+pub fn report_as_str<E: IntoDiagnostics>(
+    files: &mut Files,
+    error: E,
+    color_opt: ColorOpt,
+) -> String {
+    let mut buffer = Vec::new();
+    let mut with_color;
+    let mut no_color;
+    let writer: &mut dyn WriteColor = if color_opt == colorchoice::ColorChoice::Never {
+        no_color = NoColor::new(&mut buffer);
+        &mut no_color
+    } else {
+        with_color = Ansi::new(&mut buffer);
+        &mut with_color
+    };
+
+    report_with(writer, files, error, ErrorFormat::Text);
+    // unwrap(): report_with() should only print valid utf8 to the the buffer
+    String::from_utf8(buffer).unwrap()
+}
+
 /// Report an error on `stderr`, provided a file database and a list of stdlib file ids.
-pub fn report_with<E: IntoDiagnostics<FileId>>(
+pub fn report_with<E: IntoDiagnostics>(
     writer: &mut dyn WriteColor,
-    files: &mut Files<String>,
-    stdlib_ids: Option<&Vec<FileId>>,
+    files: &mut Files,
     error: E,
     format: ErrorFormat,
 ) {
     let config = codespan_reporting::term::Config::default();
-    let diagnostics = error.into_diagnostics(files, stdlib_ids);
+    let diagnostics = error.into_diagnostics(files);
     let stderr = std::io::stderr();
 
     let result = match format {
@@ -100,7 +130,7 @@ pub fn report_with<E: IntoDiagnostics<FileId>>(
         ErrorFormat::Yaml => serde_yaml::to_writer(stderr, &DiagnosticsWrapper::from(diagnostics))
             .map_err(|err| err.to_string()),
         ErrorFormat::Toml => toml::to_string(&DiagnosticsWrapper::from(diagnostics))
-            .map(|repr| eprint!("{}", repr))
+            .map(|repr| eprint!("{repr}"))
             .map_err(|err| err.to_string()),
     };
 

@@ -12,8 +12,8 @@ to parse, to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tree-sitter-highlight = "0.22.0"
-tree-sitter-javascript = "0.21.3"
+tree-sitter-highlight = "0.25.4"
+tree-sitter-javascript = "0.23.1"
 ```
 
 Define the list of highlight names that you will recognize:
@@ -21,15 +21,23 @@ Define the list of highlight names that you will recognize:
 ```rust
 let highlight_names = [
     "attribute",
+    "comment",
     "constant",
-    "function.builtin",
+    "constant.builtin",
+    "constructor",
+    "embedded",
     "function",
+    "function.builtin",
     "keyword",
+    "module",
+    "number",
     "operator",
     "property",
+    "property.builtin",
     "punctuation",
     "punctuation.bracket",
     "punctuation.delimiter",
+    "punctuation.special",
     "string",
     "string.special",
     "tag",
@@ -55,7 +63,7 @@ Load some highlighting queries from the `queries` directory of the language repo
 ```rust
 use tree_sitter_highlight::HighlightConfiguration;
 
-let javascript_language = tree_sitter_javascript::language();
+let javascript_language = tree_sitter_javascript::LANGUAGE.into();
 
 let mut javascript_config = HighlightConfiguration::new(
     javascript_language,
@@ -87,10 +95,10 @@ let highlights = highlighter.highlight(
 for event in highlights {
     match event.unwrap() {
         HighlightEvent::Source {start, end} => {
-            eprintln!("source: {}-{}", start, end);
+            eprintln!("source: {start}-{end}");
         },
         HighlightEvent::HighlightStart(s) => {
-            eprintln!("highlight style started: {:?}", s);
+            eprintln!("highlight style started: {s:?}");
         },
         HighlightEvent::HighlightEnd => {
             eprintln!("highlight style ended");

@@ -37,16 +37,21 @@ _clap_complete_NAME() {
     else
         local _CLAP_COMPLETE_SPACE=true
     fi
+    local words=("${COMP_WORDS[@]}")
+    if [[ "${BASH_VERSINFO[0]}" -ge 4 ]]; then
+        words[COMP_CWORD]="$2"
+    fi
     COMPREPLY=( $( \
         _CLAP_IFS="$IFS" \
         _CLAP_COMPLETE_INDEX="$_CLAP_COMPLETE_INDEX" \
         _CLAP_COMPLETE_COMP_TYPE="$_CLAP_COMPLETE_COMP_TYPE" \
+        _CLAP_COMPLETE_SPACE="$_CLAP_COMPLETE_SPACE" \
         VAR="bash" \
-        "COMPLETER" -- "${COMP_WORDS[@]}" \
+        "COMPLETER" -- "${words[@]}" \
     ) )
     if [[ $? != 0 ]]; then
         unset COMPREPLY
-    elif [[ $SUPPRESS_SPACE == 1 ]] && [[ "${COMPREPLY-}" =~ [=/:]$ ]]; then
+    elif [[ $_CLAP_COMPLETE_SPACE == false ]] && [[ "${COMPREPLY-}" =~ [=/:]$ ]]; then
         compopt -o nospace
     fi
 }
@@ -281,8 +286,15 @@ Register-ArgumentCompleter -Native -CommandName {bin} -ScriptBlock {{
 
     $prev = $env:{var};
     $env:{var} = "powershell";
+
+    $args = $commandAst.Extent.Text
+    $args = $args.Substring(0, [math]::Min($cursorPosition, $args.Length));
+    if ($wordToComplete -eq "") {{
+        $args += " ''";
+    }}
+
     $results = Invoke-Expression @"
-& {completer} -- $commandAst
+& {completer} -- $args
 "@;
     if ($null -eq $prev) {{
         Remove-Item Env:\{var};
@@ -365,7 +377,7 @@ function _clap_dynamic_completer_NAME() {
         _CLAP_IFS="$_CLAP_IFS" \
         _CLAP_COMPLETE_INDEX="$_CLAP_COMPLETE_INDEX" \
         VAR="zsh" \
-        COMPLETER -- ${words} 2>/dev/null \
+        COMPLETER -- "${words[@]}" 2>/dev/null \
     )}")
 
     if [[ -n $completions ]]; then

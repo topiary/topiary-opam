@@ -22,7 +22,7 @@ use crate::measurement::ValueFormatter;
 use crate::report::{BenchmarkId, ValueType};
 use crate::stats::bivariate::Data;
 
-use super::{PlotContext, PlotData, Plotter};
+use super::{LinePlotConfig, PlotContext, PlotData, Plotter};
 use crate::format;
 
 fn gnuplot_escape(string: &str) -> String {
@@ -49,20 +49,6 @@ fn debug_script(path: &Path, figure: &Figure) {
         if let Err(e) = result {
             error!("Failed to write debug output: {}", e);
         }
-    }
-}
-
-/// Private
-trait Append<T> {
-    /// Private
-    fn append_(self, item: T) -> Self;
-}
-
-// NB I wish this was in the standard library
-impl<T> Append<T> for Vec<T> {
-    fn append_(mut self, item: T) -> Vec<T> {
-        self.push(item);
-        self
     }
 }
 
@@ -201,13 +187,15 @@ impl Plotter for Gnuplot {
 
     fn line_comparison(
         &mut self,
+        line_config: LinePlotConfig,
         ctx: PlotContext<'_>,
         formatter: &dyn ValueFormatter,
         all_curves: &[&(&BenchmarkId, Vec<f64>)],
         value_type: ValueType,
     ) {
-        let path = ctx.line_comparison_path();
+        let path = (line_config.path)(&ctx);
         self.process_list.push(line_comparison(
+            line_config,
             formatter,
             ctx.id.as_title(),
             all_curves,

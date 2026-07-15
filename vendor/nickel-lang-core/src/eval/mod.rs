@@ -44,15 +44,15 @@
 //! be performed:
 //!
 //! - `exp1` needs to be evaluated. The result must be saved somewhere, together with the resulting
-//! environment
+//!   environment
 //! - same thing for `exp2`
 //! - Finally, the implementation of `+` can proceed with the computation
 //!
 //! We detail the case of binary operators, as the case of unary ones is similar and simpler.
 //!
 //! - **Op(op, first, second)**: pushes an `OpFirst` element on the stack, which saves the operator
-//! `op`, the second argument `second` and the current environment, and proceed with the evaluation
-//! of `first`
+//!   `op`, the second argument `second` and the current environment, and proceed with the evaluation
+//!   of `first`
 //! - **OpFirst on stack**: if the evaluation of the current term is done and there is an `OpFirst`
 //!   marker on the stack, then:
 //!     1. Extract the saved operator, the second argument and the environment `env2` from the
@@ -73,16 +73,15 @@
 //! probably suboptimal for a functional language and is unable to collect cyclic data, which may
 //! appear inside recursive records. A dedicated garbage collector is probably something to
 //! consider at some point.
-
-use crate::identifier::Ident;
-use crate::term::string::NickelString;
 use crate::{
-    cache::{Cache as ImportCache, Envs, ImportResolver},
+    cache::{CacheHub as ImportCaches, ImportResolver},
     closurize::{closurize_rec_record, Closurize},
     environment::Environment as GenericEnvironment,
-    error::{Error, EvalError},
-    identifier::LocIdent,
+    error::{warning::Warning, Error, EvalError, Reporter},
+    files::{FileId, Files},
+    identifier::{Ident, LocIdent},
     match_sharedterm,
+    metrics::{increment, measure_runtime},
     position::TermPos,
     program::FieldPath,
     term::{
@@ -90,22 +89,24 @@ use crate::{
         make as mk_term,
         pattern::compile::Compile,
         record::{Field, RecordData},
-        BinaryOp, BindingType, LetAttrs, MatchBranch, MatchData, RecordOpKind, RichTerm,
+        string::NickelString,
+        BinaryOp, BindingType, Import, LetAttrs, MatchBranch, MatchData, RecordOpKind, RichTerm,
         RuntimeContract, StrChunk, Term, UnaryOp,
     },
+    transform::gen_pending_contracts,
 };
 
 use std::io::Write;
 
 pub mod cache;
 pub mod callstack;
+pub mod contract_eq;
 pub mod fixpoint;
 pub mod merge;
 pub mod operation;
 pub mod stack;
 
 use callstack::*;
-use codespan::FileId;
 use operation::OperationCont;
 use stack::{Stack, StrAccData};
 
@@ -131,10 +132,18 @@ pub struct VirtualMachine<R: ImportResolver, C: Cache> {
     initial_env: Environment,
     // The stream for writing trace output.
     trace: Box<dyn Write>,
+    /// A collector for warnings. Currently we only collect warnings and not errors; errors
+    /// terminate evaluation (or typechecking, or whatever) immediately, and so they just
+    /// get early-returned in a `Result`.
+    pub reporter: Box<dyn Reporter<(Warning, Files)>>,
 }
 
 impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
-    pub fn new(import_resolver: R, trace: impl Write + 'static) -> Self {
+    pub fn new(
+        import_resolver: R,
+        trace: impl Write + 'static,
+        reporter: impl Reporter<(Warning, Files)> + 'static,
+    ) -> Self {
         VirtualMachine {
             import_resolver,
             call_stack: Default::default(),
@@ -142,10 +151,16 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
             cache: Cache::new(),
             initial_env: Environment::new(),
             trace: Box::new(trace),
+            reporter: Box::new(reporter),
         }
     }
 
-    pub fn new_with_cache(import_resolver: R, cache: C, trace: impl Write + 'static) -> Self {
+    pub fn new_with_cache(
+        import_resolver: R,
+        cache: C,
+        trace: impl Write + 'static,
+        reporter: impl Reporter<(Warning, Files)> + 'static,
+    ) -> Self {
         VirtualMachine {
             import_resolver,
             call_stack: Default::default(),
@@ -153,7 +168,23 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
             cache,
             trace: Box::new(trace),
             initial_env: Environment::new(),
+            reporter: Box::new(reporter),
         }
+    }
+
+    pub fn with_reporter(
+        self,
+        reporter: impl Reporter<(Warning, Files)> + 'static,
+    ) -> VirtualMachine<R, C> {
+        VirtualMachine {
+            reporter: Box::new(reporter),
+            ..self
+        }
+    }
+
+    pub fn warn(&mut self, warning: Warning) {
+        self.reporter
+            .report((warning, self.import_resolver.files().clone()));
     }
 
     /// Reset the state of the machine (stacks, eval mode and state of cached elements) to prepare
@@ -334,11 +365,8 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
 
             prev_pos = current_value.pos;
 
-            let curr_value_with_ctr = RuntimeContract::apply_all(
-                current_value,
-                field.pending_contracts.into_iter(),
-                prev_pos,
-            );
+            let curr_value_with_ctr =
+                RuntimeContract::apply_all(current_value, field.pending_contracts, prev_pos);
 
             let current_evaled = self.eval_closure(Closure {
                 body: curr_value_with_ctr,
@@ -349,7 +377,7 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
 
             match current_evaled.body.term.into_owned() {
                 Term::Record(mut record_data) => {
-                    let Some(next_field) = record_data.fields.remove(id) else {
+                    let Some(next_field) = record_data.fields.swap_remove(id) else {
                         return Err(EvalError::FieldMissing {
                             id: *id,
                             field_names: record_data.field_names(RecordOpKind::IgnoreEmptyOpt),
@@ -486,7 +514,10 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
     ///  - an evaluation error
     ///  - the evaluated term with its final environment
     pub fn eval_closure(&mut self, mut clos: Closure) -> Result<Closure, EvalError> {
-        loop {
+        #[cfg(feature = "metrics")]
+        let start_time = std::time::Instant::now();
+
+        let result = loop {
             let Closure {
                 body:
                     RichTerm {
@@ -539,7 +570,7 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
                         }
                         None | Some(..) => {
                             // This operation should not be allowed to evaluate a sealed term
-                            return Err(EvalError::BlameError {
+                            break Err(EvalError::BlameError {
                                 evaluated_arg: label.get_evaluated_arg(&self.cache),
                                 label,
                                 call_stack: self.call_stack.clone(),
@@ -548,12 +579,7 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
                     }
                 }
                 Term::Var(x) => {
-                    let idx = env
-                        .get(&x.ident())
-                        .or_else(|| self.initial_env.get(&x.ident()))
-                        .cloned()
-                        .ok_or(EvalError::UnboundIdentifier(x, pos))?;
-
+                    let idx = get_var(x, &env, &self.initial_env, pos)?;
                     self.enter_cache_index(Some(x), idx, pos, env)?
                 }
                 Term::Closure(idx) => self.enter_cache_index(None, idx, pos, env)?,
@@ -569,21 +595,29 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
                     );
                     Closure { body: t1, env }
                 }
-                Term::Let(x, bound, body, LetAttrs { binding_type, rec }) => {
-                    let bound_closure: Closure = Closure {
-                        body: bound,
-                        env: env.clone(),
-                    };
+                Term::Let(bindings, body, LetAttrs { binding_type, rec }) => {
+                    let mut indices = Vec::new();
+                    let init_env = env.clone();
 
-                    let idx = self.cache.add(bound_closure, binding_type);
+                    for (x, bound) in bindings {
+                        let bound_closure: Closure = Closure {
+                            body: bound,
+                            env: init_env.clone(),
+                        };
 
-                    // Patch the environment with the (x <- closure) binding
-                    if rec {
-                        self.cache
-                            .patch(idx.clone(), |cl| cl.env.insert(x.ident(), idx.clone()));
+                        let idx = self.cache.add(bound_closure, binding_type.clone());
+
+                        // Patch the environment with the (x <- closure) binding
+                        if rec {
+                            indices.push(idx.clone());
+                        }
+
+                        env.insert(x.ident(), idx);
                     }
 
-                    env.insert(x.ident(), idx);
+                    for idx in indices {
+                        self.cache.patch(idx, |cl| cl.env = env.clone());
+                    }
 
                     Closure { body, env }
                 }
@@ -694,7 +728,7 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
                         env: Environment::new(),
                     }
                 }
-                Term::RecRecord(data, dyn_fields, deps) => {
+                Term::RecRecord(data, includes, dyn_fields, deps) => {
                     // We start by closurizing the fields, which might not be if the record is
                     // coming out of the parser.
 
@@ -704,8 +738,42 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
                     // type, once we have a different representation for runtime evaluation,
                     // instead of relying on invariants. But for now, we have to live with it.
                     let (mut static_part, dyn_fields) = if !data.attrs.closurized {
+                        let includes_as_terms: Result<Vec<_>, _> = includes
+                            .into_iter()
+                            .map(|incl| -> Result<_, EvalError> {
+                                let field = Field {
+                                    value: Some(RichTerm::new(
+                                        Term::Closure(get_var(
+                                            incl.ident,
+                                            &env,
+                                            &self.initial_env,
+                                            TermPos::None,
+                                        )?),
+                                        incl.ident.pos,
+                                    )),
+                                    metadata: incl.metadata,
+                                    pending_contracts: Vec::new(),
+                                };
+
+                                Ok((
+                                    incl.ident,
+                                    gen_pending_contracts::with_pending_contracts(field)?,
+                                ))
+                            })
+                            .collect();
+
+                        // We assume that the parser doesn't allow conflicts between field
+                        // definitions and includes (the same field is defined in both). This
+                        // restriction might be lifted in the future (we would probably merge the
+                        // included field and the other definition pieces), but for now it's
+                        // simpler this way.
+                        let mut data = data;
+                        data.fields.extend(includes_as_terms?);
                         closurize_rec_record(&mut self.cache, data, dyn_fields, deps, env)
                     } else {
+                        // In a record that has been already closurized, we expect include
+                        // expressions to be evaluated away.
+                        debug_assert!(includes.is_empty());
                         (data, dyn_fields)
                     };
 
@@ -752,7 +820,7 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
 
                             let extend = mk_term::op2(
                                 BinaryOp::RecordInsert {
-                                    metadata,
+                                    metadata: Box::new(metadata),
                                     pending_contracts,
                                     ext_kind,
                                     op_kind: RecordOpKind::ConsiderAllFields,
@@ -776,18 +844,26 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
                     }
                 }
                 Term::ResolvedImport(id) => {
+                    increment!(format!("import:{id:?}"));
+
                     if let Some(t) = self.import_resolver.get(id) {
                         Closure::atomic_closure(t)
                     } else {
-                        return Err(EvalError::InternalError(
+                        break Err(EvalError::InternalError(
                             format!("Resolved import not found ({id:?})"),
                             pos,
                         ));
                     }
                 }
-                Term::Import(path) => {
-                    return Err(EvalError::InternalError(
+                Term::Import(Import::Path { path, .. }) => {
+                    break Err(EvalError::InternalError(
                         format!("Unresolved import ({})", path.to_string_lossy()),
+                        pos,
+                    ));
+                }
+                Term::Import(Import::Package { id }) => {
+                    return Err(EvalError::InternalError(
+                        format!("Unresolved package import ({id})"),
                         pos,
                     ));
                 }
@@ -826,10 +902,10 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
                     }
                 }
                 Term::ParseError(parse_error) => {
-                    return Err(EvalError::ParseError(parse_error));
+                    break Err(EvalError::ParseError(parse_error));
                 }
                 Term::RuntimeError(error) => {
-                    return Err(error);
+                    break Err(error);
                 }
                 // For now, we simply erase annotations at runtime. They aren't accessible anyway
                 // (as opposed to field metadata) and don't change the operational semantics, as
@@ -839,6 +915,8 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
                 // avoiding repeated contract application. Annotations could then be a good way of
                 // remembering which contracts have been applied to a value.
                 Term::Annotated(annot, inner) => {
+                    increment!("contract:free-standing(annotated)");
+
                     // We apply the contract coming from the static type annotation separately as
                     // it is optimized.
                     let static_contract = annot.static_contract();
@@ -852,18 +930,13 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
                     };
 
                     let inner_with_ctr =
-                        RuntimeContract::apply_all(inner_with_static, contracts.into_iter(), pos);
+                        RuntimeContract::apply_all(inner_with_static, contracts, pos);
 
                     Closure {
                         body: inner_with_ctr,
                         env,
                     }
                 }
-                // Evaluating a type turns it into a contract.
-                Term::Type(ty) => Closure {
-                    body: ty.contract()?,
-                    env,
-                },
                 // Function call if there's no continuation on the stack (otherwise, the function
                 // is just an argument to a primop or to put in the eval cache)
                 Term::Fun(x, t) if !has_cont_on_stack => {
@@ -872,7 +945,7 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
                         env.insert(x.ident(), idx);
                         Closure { body: t, env }
                     } else {
-                        return Ok(Closure {
+                        break Ok(Closure {
                             body: RichTerm::new(Term::Fun(x, t), pos),
                             env,
                         });
@@ -893,7 +966,7 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
                             env,
                         }
                     } else {
-                        return Ok(Closure {
+                        break Ok(Closure {
                             body: RichTerm::new(Term::Match(data), pos),
                             env,
                         });
@@ -924,21 +997,26 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
                     // are supposed to evaluate an application, but the left hand side isn't a
                     // function)
                     else if let Some((arg, pos_app)) = self.stack.pop_arg(&self.cache) {
-                        return Err(EvalError::NotAFunc(evaluated.body, arg.body, pos_app));
+                        break Err(EvalError::NotAFunc(evaluated.body, arg.body, pos_app));
                     }
                     // Finally, if the stack is empty, it's all good: it just means we are done
                     // evaluating.
                     else {
-                        return Ok(evaluated);
+                        break Ok(evaluated);
                     }
                 }
             })
-        }
+        };
+
+        #[cfg(feature = "metrics")]
+        increment!("runtime:eval", start_time.elapsed().as_millis() as u64);
+
+        result
     }
 
     /// Evaluate a term, but attempt to continue on errors.
     ///
-    /// This differs from `VirtualMachine::eval_full` in 2 ways:
+    /// This differs from `VirtualMachine::eval_full` in three ways:
     /// - We try to accumulate errors instead of bailing out. When recursing into record
     ///   fields and array elements, we keep evaluating subsequent elements even if one
     ///   fails.
@@ -995,6 +1073,9 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
                             }
                         }
                     }
+                    Term::EnumVariant { arg, .. } => {
+                        inner(slf, acc, arg.clone(), recursion_limit.saturating_sub(1));
+                    }
                     _ => {}
                 },
             }
@@ -1005,16 +1086,39 @@ impl<R: ImportResolver, C: Cache> VirtualMachine<R, C> {
     }
 }
 
-impl<C: Cache> VirtualMachine<ImportCache, C> {
+impl<C: Cache> VirtualMachine<ImportCaches, C> {
     /// Prepare the underlying program for evaluation (load the stdlib, typecheck, transform,
     /// etc.). Sets the initial environment of the virtual machine.
     pub fn prepare_eval(&mut self, main_id: FileId) -> Result<RichTerm, Error> {
-        let Envs {
-            eval_env,
-            type_ctxt,
-        } = self.import_resolver.prepare_stdlib(&mut self.cache)?;
-        self.import_resolver.prepare(main_id, &type_ctxt)?;
-        self.initial_env = eval_env;
+        self.prepare_eval_impl(main_id, true)
+    }
+
+    /// Same as [Self::prepare_eval], but skip typechecking.
+    pub fn prepare_eval_only(&mut self, main_id: FileId) -> Result<RichTerm, Error> {
+        self.prepare_eval_impl(main_id, false)
+    }
+
+    fn prepare_eval_impl(&mut self, main_id: FileId, typecheck: bool) -> Result<RichTerm, Error> {
+        measure_runtime!(
+            "runtime:prepare_stdlib",
+            self.import_resolver.prepare_stdlib()?
+        );
+
+        measure_runtime!(
+            "runtime:prepare_main",
+            if typecheck {
+                self.import_resolver.prepare(main_id)
+            } else {
+                self.import_resolver.prepare_eval_only(main_id)
+            }
+        )?;
+
+        // Unwrap: closurization only fails if the input wasn't parsed, and we just
+        // parsed it.
+        self.import_resolver
+            .closurize(&mut self.cache, main_id)
+            .unwrap();
+        self.initial_env = self.import_resolver.mk_eval_env(&mut self.cache);
         Ok(self.import_resolver().get(main_id).unwrap())
     }
 
@@ -1025,10 +1129,16 @@ impl<C: Cache> VirtualMachine<ImportCache, C> {
     /// # Returns
     ///
     /// The initial evaluation and typing environments, containing the stdlib items.
-    pub fn prepare_stdlib(&mut self) -> Result<Envs, Error> {
-        let envs = self.import_resolver.prepare_stdlib(&mut self.cache)?;
-        self.initial_env = envs.eval_env.clone();
-        Ok(envs)
+    pub fn prepare_stdlib(&mut self) -> Result<(), Error> {
+        self.import_resolver.prepare_stdlib()?;
+        self.initial_env = self.import_resolver.mk_eval_env(&mut self.cache);
+        Ok(())
+    }
+
+    /// Generate an initial evaluation environment from the stdlib from the underlying import
+    /// cache and eval cache.
+    pub fn mk_eval_env(&mut self) -> Environment {
+        self.import_resolver.mk_eval_env(&mut self.cache)
     }
 }
 
@@ -1073,7 +1183,7 @@ pub enum EnvBuildError {
 }
 
 /// Add the bindings of a record to an environment. Ignore the fields defined by interpolation as
-/// well as fields without definition.
+/// well, fields without definition and `include` expressions.
 pub fn env_add_record<C: Cache>(
     cache: &mut C,
     env: &mut Environment,
@@ -1125,6 +1235,21 @@ fn update_at_indices<C: Cache>(cache: &mut C, stack: &mut Stack<C>, closure: &Cl
     }
 }
 
+/// Fetches a closure from the local or the initial environment, or fails with
+/// [crate::error::EvalError::UnboundIdentifier] with either the variable position, or the
+/// provided fallback position if the former isn't defined.
+fn get_var(
+    id: LocIdent,
+    env: &Environment,
+    initial_env: &Environment,
+    pos: TermPos,
+) -> Result<CacheIndex, EvalError> {
+    env.get(&id.ident())
+        .or_else(|| initial_env.get(&id.ident()))
+        .cloned()
+        .ok_or(EvalError::UnboundIdentifier(id, id.pos.or(pos)))
+}
+
 /// Recursively substitute each variable occurrence of a term for its value in the environment.
 pub fn subst<C: Cache>(
     cache: &C,
@@ -1135,14 +1260,12 @@ pub fn subst<C: Cache>(
     let RichTerm { term, pos } = rt;
 
     match term.into_owned() {
-        Term::Var(id) => env
-            .get(&id.ident())
-            .or_else(|| initial_env.get(&id.ident()))
+        Term::Var(id) => get_var(id, env, initial_env, TermPos::None)
             .map(|idx| {
-                let closure = cache.get(idx.clone());
+                let closure = cache.get(idx);
                 subst(cache, closure.body, initial_env, &closure.env)
             })
-            .unwrap_or_else(|| RichTerm::new(Term::Var(id), pos)),
+            .unwrap_or_else(|_| RichTerm::new(Term::Var(id), pos)),
         Term::Closure(idx) => {
                 let closure = cache.get(idx.clone());
                 subst(cache, closure.body, initial_env, &closure.env)
@@ -1156,6 +1279,7 @@ pub fn subst<C: Cache>(
         // Do not substitute under lambdas: mutually recursive function could cause an infinite
         // loop. Although avoidable, this requires some care and is not currently needed.
         | v @ Term::Fun(..)
+        | v @ Term::CustomContract(_)
         | v @ Term::Lbl(_)
         | v @ Term::ForeignId(_)
         | v @ Term::SealingKey(_)
@@ -1165,17 +1289,17 @@ pub fn subst<C: Cache>(
         // We could recurse here, because types can contain terms which would then be subject to
         // substitution. Not recursing should be fine, though, because a type in term position
         // turns into a contract, and we don't substitute inside contracts either currently.
-        | v @ Term::Type(_) => RichTerm::new(v, pos),
+        | v @ Term::Type {..} => RichTerm::new(v, pos),
         Term::EnumVariant { tag, arg, attrs } => {
             let arg = subst(cache, arg, initial_env, env);
 
             RichTerm::new(Term::EnumVariant { tag, arg, attrs }, pos)
         }
-        Term::Let(id, t1, t2, attrs) => {
-            let t1 = subst(cache, t1, initial_env, env);
-            let t2 = subst(cache, t2, initial_env, env);
+        Term::Let(bindings, body, attrs) => {
+            let bindings = bindings.into_iter().map(|(key, val)| (key, subst(cache, val, initial_env, env))).collect();
+            let body = subst(cache, body, initial_env, env);
 
-            RichTerm::new(Term::Let(id, t1, t2, attrs), pos)
+            RichTerm::new(Term::Let(bindings, body, attrs), pos)
         }
         p @ Term::LetPattern(..) => panic!(
             "Pattern {p:?} has not been transformed before evaluation"
@@ -1239,7 +1363,9 @@ pub fn subst<C: Cache>(
 
             RichTerm::new(Term::Record(record), pos)
         }
-        Term::RecRecord(record, dyn_fields, deps) => {
+        // Currently, we downright ignore `include` expressions. However, one could argue that
+        // substituting `foo` for `bar` in `{include foo}` should result in `{foo = bar}`.
+        Term::RecRecord(record, includes, dyn_fields, deps) => {
             let mut record = record
                 .map_defined_values(|_, value| subst(cache, value, initial_env, env));
 
@@ -1256,7 +1382,7 @@ pub fn subst<C: Cache>(
                 })
                 .collect();
 
-            RichTerm::new(Term::RecRecord(record, dyn_fields, deps), pos)
+            RichTerm::new(Term::RecRecord(record, includes, dyn_fields, deps), pos)
         }
         Term::Array(ts, mut attrs) => {
             let ts = ts

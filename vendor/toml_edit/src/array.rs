@@ -5,8 +5,7 @@ use crate::repr::Decor;
 use crate::value::{DEFAULT_LEADING_VALUE_DECOR, DEFAULT_VALUE_DECOR};
 use crate::{Item, RawString, Value};
 
-/// Type representing a TOML array,
-/// payload of the `Value::Array` variant's value
+/// A TOML [`Value`] that contains a sequence of [`Value`]s
 #[derive(Debug, Default, Clone)]
 pub struct Array {
     // `trailing` represents whitespaces, newlines
@@ -20,11 +19,11 @@ pub struct Array {
     pub(crate) values: Vec<Item>,
 }
 
-/// An owned iterator type over `Table`'s key/value pairs.
+/// An owned iterator type over [`Array`]'s [`Value`]s
 pub type ArrayIntoIter = Box<dyn Iterator<Item = Value>>;
-/// An iterator type over `Array`'s values.
+/// An iterator type over [`Array`]'s [`Value`]s
 pub type ArrayIter<'a> = Box<dyn Iterator<Item = &'a Value> + 'a>;
-/// An iterator type over `Array`'s values.
+/// An iterator type over [`Array`]'s [`Value`]s
 pub type ArrayIterMut<'a> = Box<dyn Iterator<Item = &'a mut Value> + 'a>;
 
 /// Constructors
@@ -89,7 +88,7 @@ impl Array {
 
     /// The location within the original document
     ///
-    /// This generally requires an [`ImDocument`][crate::ImDocument].
+    /// This generally requires a [`Document`][crate::Document].
     pub fn span(&self) -> Option<std::ops::Range<usize>> {
         self.span.clone()
     }
@@ -175,9 +174,7 @@ impl Array {
     /// arr.push("foo");
     /// ```
     pub fn push<V: Into<Value>>(&mut self, v: V) {
-        self.value_op(v.into(), true, |items, value| {
-            items.push(Item::Value(value));
-        });
+        self.values.push(Item::Value(v.into()));
     }
 
     /// Appends a new, already formatted value to the end of the array.
@@ -212,9 +209,7 @@ impl Array {
     /// arr.insert(0, "start");
     /// ```
     pub fn insert<V: Into<Value>>(&mut self, index: usize, v: V) {
-        self.value_op(v.into(), true, |items, value| {
-            items.insert(index, Item::Value(value));
-        });
+        self.values.insert(index, Item::Value(v.into()));
     }
 
     /// Inserts an already formatted value at the given position within the array, shifting all
@@ -287,7 +282,7 @@ impl Array {
     pub fn replace_formatted(&mut self, index: usize, v: Value) -> Value {
         match mem::replace(&mut self.values[index], Item::Value(v)) {
             Item::Value(old_value) => old_value,
-            x => panic!("non-value item {:?} in an array", x),
+            x => panic!("non-value item {x:?} in an array"),
         }
     }
 
@@ -307,7 +302,7 @@ impl Array {
         let removed = self.values.remove(index);
         match removed {
             Item::Value(v) => v,
-            x => panic!("non-value item {:?} in an array", x),
+            x => panic!("non-value item {x:?} in an array"),
         }
     }
 
@@ -374,21 +369,6 @@ impl Array {
             }
         });
     }
-
-    fn value_op<T>(
-        &mut self,
-        v: Value,
-        decorate: bool,
-        op: impl FnOnce(&mut Vec<Item>, Value) -> T,
-    ) -> T {
-        let mut value = v;
-        if !self.is_empty() && decorate {
-            value.decorate(" ", "");
-        } else if decorate {
-            value.decorate("", "");
-        }
-        op(&mut self.values, value)
-    }
 }
 
 #[cfg(feature = "display")]
@@ -412,7 +392,7 @@ impl<V: Into<Value>> FromIterator<V> for Array {
         I: IntoIterator<Item = V>,
     {
         let v = iter.into_iter().map(|a| Item::Value(a.into()));
-        Array {
+        Self {
             values: v.collect(),
             ..Default::default()
         }

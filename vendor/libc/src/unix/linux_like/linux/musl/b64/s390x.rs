@@ -2,15 +2,23 @@ use crate::off_t;
 use crate::prelude::*;
 
 pub type blksize_t = i64;
-pub type c_char = u8;
 pub type nlink_t = u64;
 pub type wchar_t = i32;
 pub type greg_t = u64;
 pub type __u64 = u64;
 pub type __s64 = i64;
+pub type statfs64 = statfs;
 
 s! {
     pub struct ipc_perm {
+        #[cfg(musl_v1_2_3)]
+        pub __key: crate::key_t,
+        #[cfg(not(musl_v1_2_3))]
+        #[deprecated(
+            since = "0.2.173",
+            note = "This field is incorrectly named and will be changed
+                to __key in a future release."
+        )]
         pub __ipc_perm_key: crate::key_t,
         pub uid: crate::uid_t,
         pub gid: crate::gid_t,
@@ -61,43 +69,49 @@ s! {
         pub st_blocks: crate::blkcnt64_t,
         __unused: [c_long; 3],
     }
+
+    pub struct statfs {
+        pub f_type: c_uint,
+        pub f_bsize: c_uint,
+        pub f_blocks: crate::fsblkcnt_t,
+        pub f_bfree: crate::fsblkcnt_t,
+        pub f_bavail: crate::fsblkcnt_t,
+        pub f_files: crate::fsfilcnt_t,
+        pub f_ffree: crate::fsfilcnt_t,
+        pub f_fsid: crate::fsid_t,
+        pub f_namelen: c_uint,
+        pub f_frsize: c_uint,
+        pub f_flags: c_uint,
+        pub f_spare: [c_uint; 4],
+    }
 }
 
 s_no_extra_traits! {
-    // FIXME: This is actually a union.
-    pub struct fpreg_t {
+    pub union fpreg_t {
         pub d: c_double,
-        // f: c_float,
+        pub f: c_float,
     }
 }
 
 cfg_if! {
     if #[cfg(feature = "extra_traits")] {
         impl PartialEq for fpreg_t {
-            fn eq(&self, other: &fpreg_t) -> bool {
-                self.d == other.d
+            fn eq(&self, _other: &fpreg_t) -> bool {
+                unimplemented!("traits")
             }
         }
 
         impl Eq for fpreg_t {}
 
-        impl fmt::Debug for fpreg_t {
-            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                f.debug_struct("fpreg_t").field("d", &self.d).finish()
-            }
-        }
-
         impl hash::Hash for fpreg_t {
-            fn hash<H: hash::Hasher>(&self, state: &mut H) {
-                let d: u64 = unsafe { mem::transmute(self.d) };
-                d.hash(state);
+            fn hash<H: hash::Hasher>(&self, _state: &mut H) {
+                unimplemented!("traits")
             }
         }
     }
 }
 
 pub const VEOF: usize = 4;
-pub const RTLD_DEEPBIND: c_int = 0x8;
 
 pub const EUCLEAN: c_int = 117;
 pub const ENOTNAM: c_int = 118;
@@ -133,7 +147,6 @@ pub const O_NOCTTY: c_int = 256;
 pub const O_SYNC: c_int = 1052672;
 pub const O_RSYNC: c_int = 1052672;
 pub const O_DSYNC: c_int = 4096;
-pub const O_FSYNC: c_int = 0x101000;
 pub const O_DIRECT: c_int = 0x4000;
 pub const O_DIRECTORY: c_int = 0x10000;
 pub const O_NOFOLLOW: c_int = 0x20000;
@@ -434,9 +447,11 @@ pub const SYS_uname: c_long = 122;
 pub const SYS_adjtimex: c_long = 124;
 pub const SYS_mprotect: c_long = 125;
 pub const SYS_sigprocmask: c_long = 126;
+#[deprecated(since = "0.2.70", note = "Functional up to 2.6 kernel")]
 pub const SYS_create_module: c_long = 127;
 pub const SYS_init_module: c_long = 128;
 pub const SYS_delete_module: c_long = 129;
+#[deprecated(since = "0.2.70", note = "Functional up to 2.6 kernel")]
 pub const SYS_get_kernel_syms: c_long = 130;
 pub const SYS_quotactl: c_long = 131;
 pub const SYS_getpgid: c_long = 132;
@@ -468,6 +483,7 @@ pub const SYS_sched_get_priority_min: c_long = 160;
 pub const SYS_sched_rr_get_interval: c_long = 161;
 pub const SYS_nanosleep: c_long = 162;
 pub const SYS_mremap: c_long = 163;
+#[deprecated(since = "0.2.70", note = "Functional up to 2.6 kernel")]
 pub const SYS_query_module: c_long = 167;
 pub const SYS_poll: c_long = 168;
 pub const SYS_nfsservctl: c_long = 169;
@@ -713,3 +729,4 @@ pub const SYS_futex_waitv: c_long = 449;
 pub const SYS_set_mempolicy_home_node: c_long = 450;
 pub const SYS_cachestat: c_long = 451;
 pub const SYS_fchmodat2: c_long = 452;
+pub const SYS_mseal: c_long = 462;

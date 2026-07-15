@@ -1,15 +1,5 @@
 [source.crates-io]
 replace-with = "vendored-sources"
 
-[source."git+https://github.com/tree-sitter/tree-sitter-json.git?rev=4d770d31f732d50d3ec373865822fbe659e47c75"]
-git = "https://github.com/tree-sitter/tree-sitter-json.git"
-rev = "4d770d31f732d50d3ec373865822fbe659e47c75"
-replace-with = "vendored-sources"
-
-[source."git+https://github.com/tree-sitter/tree-sitter-ocaml.git?rev=98c2130c59ca7553b47086f91c5d22180151ad55"]
-git = "https://github.com/tree-sitter/tree-sitter-ocaml.git"
-rev = "98c2130c59ca7553b47086f91c5d22180151ad55"
-replace-with = "vendored-sources"
-
 [source.vendored-sources]
 directory = "vendor"

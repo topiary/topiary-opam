@@ -7,17 +7,6 @@ use core::iter::Iterator;
 
 use crate::prelude::*;
 
-pub type c_char = i8;
-pub type c_uchar = u8;
-pub type c_schar = i8;
-pub type c_int = i32;
-pub type c_uint = u32;
-pub type c_short = i16;
-pub type c_ushort = u16;
-pub type c_long = i32;
-pub type c_ulong = u32;
-pub type c_longlong = i64;
-pub type c_ulonglong = u64;
 pub type intmax_t = i64;
 pub type uintmax_t = u64;
 pub type size_t = usize;
@@ -29,8 +18,6 @@ pub type off_t = i64;
 pub type pid_t = i32;
 pub type clock_t = c_longlong;
 pub type time_t = c_longlong;
-pub type c_double = f64;
-pub type c_float = f32;
 pub type ino_t = u64;
 pub type sigset_t = c_uchar;
 pub type suseconds_t = c_longlong;
@@ -45,26 +32,24 @@ pub type nfds_t = c_ulong;
 pub type wchar_t = i32;
 pub type nl_item = c_int;
 pub type __wasi_rights_t = u64;
+pub type locale_t = *mut __locale_struct;
 
 s_no_extra_traits! {
     #[repr(align(16))]
-    #[allow(missing_debug_implementations)]
     pub struct max_align_t {
         priv_: [f64; 4],
     }
 }
 
 #[allow(missing_copy_implementations)]
-#[cfg_attr(feature = "extra_traits", derive(Debug))]
+#[derive(Debug)]
 pub enum FILE {}
 #[allow(missing_copy_implementations)]
-#[cfg_attr(feature = "extra_traits", derive(Debug))]
+#[derive(Debug)]
 pub enum DIR {}
 #[allow(missing_copy_implementations)]
-#[cfg_attr(feature = "extra_traits", derive(Debug))]
+#[derive(Debug)]
 pub enum __locale_struct {}
-
-pub type locale_t = *mut __locale_struct;
 
 s_paren! {
     // in wasi-libc clockid_t is const struct __clockid* (where __clockid is an opaque struct),
@@ -191,7 +176,7 @@ s! {
 // etc., since it contains a flexible array member with a dynamic size.
 #[repr(C)]
 #[allow(missing_copy_implementations)]
-#[cfg_attr(feature = "extra_traits", derive(Debug))]
+#[derive(Debug)]
 pub struct dirent {
     pub d_ino: ino_t,
     pub d_type: c_uchar,
@@ -376,26 +361,17 @@ pub const _SC_PAGE_SIZE: c_int = _SC_PAGESIZE;
 pub const _SC_IOV_MAX: c_int = 60;
 pub const _SC_SYMLOOP_MAX: c_int = 173;
 
-cfg_if! {
-    if #[cfg(libc_ctest)] {
-        // skip these constants when this is active because `ctest` currently
-        // panics on parsing the constants below
-    } else {
-        // `addr_of!(EXTERN_STATIC)` is now safe; remove `unsafe` when MSRV >= 1.82
-        #[allow(unused_unsafe)]
-        pub static CLOCK_MONOTONIC: clockid_t =
-            unsafe { clockid_t(core::ptr::addr_of!(_CLOCK_MONOTONIC)) };
-        #[allow(unused_unsafe)]
-        pub static CLOCK_PROCESS_CPUTIME_ID: clockid_t =
-            unsafe { clockid_t(core::ptr::addr_of!(_CLOCK_PROCESS_CPUTIME_ID)) };
-        #[allow(unused_unsafe)]
-        pub static CLOCK_REALTIME: clockid_t =
-            unsafe { clockid_t(core::ptr::addr_of!(_CLOCK_REALTIME)) };
-        #[allow(unused_unsafe)]
-        pub static CLOCK_THREAD_CPUTIME_ID: clockid_t =
-            unsafe { clockid_t(core::ptr::addr_of!(_CLOCK_THREAD_CPUTIME_ID)) };
-    }
-}
+// FIXME(msrv): `addr_of!(EXTERN_STATIC)` is now safe; remove `unsafe` when MSRV >= 1.82
+#[allow(unused_unsafe)]
+pub static CLOCK_MONOTONIC: clockid_t = unsafe { clockid_t(core::ptr::addr_of!(_CLOCK_MONOTONIC)) };
+#[allow(unused_unsafe)]
+pub static CLOCK_PROCESS_CPUTIME_ID: clockid_t =
+    unsafe { clockid_t(core::ptr::addr_of!(_CLOCK_PROCESS_CPUTIME_ID)) };
+#[allow(unused_unsafe)]
+pub static CLOCK_REALTIME: clockid_t = unsafe { clockid_t(core::ptr::addr_of!(_CLOCK_REALTIME)) };
+#[allow(unused_unsafe)]
+pub static CLOCK_THREAD_CPUTIME_ID: clockid_t =
+    unsafe { clockid_t(core::ptr::addr_of!(_CLOCK_THREAD_CPUTIME_ID)) };
 
 pub const ABDAY_1: crate::nl_item = 0x20000;
 pub const ABDAY_2: crate::nl_item = 0x20001;
@@ -667,7 +643,7 @@ extern "C" {
         newpath: *const c_char,
         flags: c_int,
     ) -> c_int;
-    pub fn mkdirat(dirfd: c_int, pathname: *const c_char, mode: crate::mode_t) -> c_int;
+    pub fn mkdirat(dirfd: c_int, pathname: *const c_char, mode: mode_t) -> c_int;
     pub fn readlinkat(
         dirfd: c_int,
         pathname: *const c_char,
@@ -870,7 +846,7 @@ extern "C" {
 }
 
 cfg_if! {
-    if #[cfg(target_env = "p2")] {
+    if #[cfg(not(target_env = "p1"))] {
         mod p2;
         pub use self::p2::*;
     }

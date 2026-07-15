@@ -10,10 +10,10 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2021"
-rust-version = "1.74.0"
+edition = "2024"
+rust-version = "1.85.0"
 name = "malachite"
-version = "0.4.18"
+version = "0.6.1"
 authors = ["Mikhail Hogrefe <mikhailhogrefe@gmail.com>"]
 build = false
 autolib = false
@@ -33,6 +33,7 @@ keywords = [
 categories = ["mathematics"]
 license = "LGPL-3.0-only"
 repository = "https://github.com/mhogrefe/malachite"
+resolver = "2"
 
 [package.metadata.docs.rs]
 features = [
@@ -43,38 +44,6 @@ rustdoc-args = [
     "--html-in-header",
     "katex-header.html",
 ]
-
-[lib]
-name = "malachite"
-path = "src/lib.rs"
-
-[dependencies.embed-doc-image]
-version = "0.1.4"
-optional = true
-
-[dependencies.malachite-base]
-version = "0.4.18"
-default-features = false
-
-[dependencies.malachite-float]
-version = "0.4.18"
-optional = true
-default-features = false
-
-[dependencies.malachite-nz]
-version = "0.4.18"
-optional = true
-default-features = false
-
-[dependencies.malachite-q]
-version = "0.4.18"
-optional = true
-default-features = false
-
-[dependencies.serde]
-version = "1.0.188"
-features = ["derive"]
-optional = true
 
 [features]
 32_bit_limbs = [
@@ -101,3 +70,35 @@ random = [
     "malachite-float/random",
 ]
 rationals = ["malachite-q"]
+
+[lib]
+name = "malachite"
+path = "src/lib.rs"
+
+[dependencies.embed-doc-image]
+version = "0.1.4"
+optional = true
+
+[dependencies.malachite-base]
+version = "0.6.1"
+default-features = false
+
+[dependencies.malachite-float]
+version = "0.6.1"
+optional = true
+default-features = false
+
+[dependencies.malachite-nz]
+version = "0.6.1"
+optional = true
+default-features = false
+
+[dependencies.malachite-q]
+version = "0.6.1"
+optional = true
+default-features = false
+
+[dependencies.serde]
+version = "1.0.188"
+features = ["derive"]
+optional = true

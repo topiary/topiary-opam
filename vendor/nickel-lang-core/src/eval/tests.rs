@@ -1,27 +1,27 @@
 use super::cache::CacheImpl;
 use super::*;
 use crate::cache::resolvers::{DummyResolver, SimpleResolver};
-use crate::error::ImportError;
+use crate::error::{ImportError, NullReporter};
+use crate::files::Files;
 use crate::label::Label;
-use crate::parser::{grammar, lexer, ErrorTolerantParser};
+use crate::parser::{grammar, lexer, ErrorTolerantParserCompat};
 use crate::term::make as mk_term;
 use crate::term::Number;
 use crate::term::{BinaryOp, StrChunk, UnaryOp};
 use crate::transform::import_resolution::strict::resolve_imports;
 use crate::{mk_app, mk_fun, mk_record};
 use assert_matches::assert_matches;
-use codespan::Files;
 
 /// Evaluate a term without import support.
 fn eval_no_import(t: RichTerm) -> Result<Term, EvalError> {
-    VirtualMachine::<_, CacheImpl>::new(DummyResolver {}, std::io::sink())
+    VirtualMachine::<_, CacheImpl>::new(DummyResolver {}, std::io::sink(), NullReporter {})
         .eval(t)
         .map(Term::from)
 }
 
 /// Fully evaluate a term without import support.
 fn eval_full_no_import(t: RichTerm) -> Result<Term, EvalError> {
-    VirtualMachine::<_, CacheImpl>::new(DummyResolver {}, std::io::sink())
+    VirtualMachine::<_, CacheImpl>::new(DummyResolver {}, std::io::sink(), NullReporter {})
         .eval_full(t)
         .map(Term::from)
 }
@@ -30,7 +30,7 @@ fn parse(s: &str) -> Option<RichTerm> {
     let id = Files::new().add("<test>", String::from(s));
 
     grammar::TermParser::new()
-        .parse_strict(id, lexer::Lexer::new(s))
+        .parse_strict_compat(id, lexer::Lexer::new(s))
         .map(RichTerm::without_pos)
         .map_err(|err| println!("{err:?}"))
         .ok()
@@ -82,7 +82,7 @@ fn simple_app() {
 
 #[test]
 fn simple_let() {
-    let t = mk_term::let_in("x", mk_term::integer(5), mk_term::var("x"));
+    let t = mk_term::let_one_in("x", mk_term::integer(5), mk_term::var("x"));
     assert_eq!(Ok(Term::Num(Number::from(5))), eval_no_import(t));
 }
 
@@ -122,7 +122,7 @@ fn asking_for_various_types() {
 
 #[test]
 fn imports() {
-    let mut vm = VirtualMachine::new(SimpleResolver::new(), std::io::sink());
+    let mut vm = VirtualMachine::new(SimpleResolver::new(), std::io::sink(), NullReporter {});
     vm.import_resolver_mut()
         .add_source(String::from("two"), String::from("1 + 1"));
     vm.import_resolver_mut()
@@ -131,15 +131,15 @@ fn imports() {
         .add_source(String::from("bad"), String::from("^$*/.23ab 0°@"));
     vm.import_resolver_mut().add_source(
         String::from("nested"),
-        String::from("let x = import \"two\" in x + 1"),
+        String::from("let x = import \"two\" as 'Nickel in x + 1"),
     );
     vm.import_resolver_mut().add_source(
         String::from("cycle"),
-        String::from("let x = import \"cycle_b\" in {a = 1, b = x.a}"),
+        String::from("let x = import \"cycle_b\" as 'Nickel in {a = 1, b = x.a}"),
     );
     vm.import_resolver_mut().add_source(
         String::from("cycle_b"),
-        String::from("let x = import \"cycle\" in {a = x.a}"),
+        String::from("let x = import \"cycle\" as 'Nickel in {a = x.a}"),
     );
 
     fn mk_import<R>(
@@ -152,7 +152,11 @@ fn imports() {
         R: ImportResolver,
     {
         resolve_imports(
-            mk_term::let_in(var, mk_term::import(import), body),
+            mk_term::let_one_in(
+                var,
+                mk_term::import(import, crate::cache::InputFormat::Nickel),
+                body,
+            ),
             vm.import_resolver_mut(),
         )
         .map(|resolve_result| resolve_result.transformed_term)
@@ -267,31 +271,46 @@ fn initial_env() {
         ),
     );
 
-    let t = mk_term::let_in("x", mk_term::integer(2), mk_term::var("x"));
+    let t = mk_term::let_one_in("x", mk_term::integer(2), mk_term::var("x"));
     assert_eq!(
-        VirtualMachine::new_with_cache(DummyResolver {}, eval_cache.clone(), std::io::sink())
-            .with_initial_env(initial_env.clone())
-            .eval(t)
-            .map(RichTerm::without_pos),
+        VirtualMachine::new_with_cache(
+            DummyResolver {},
+            eval_cache.clone(),
+            std::io::sink(),
+            NullReporter {}
+        )
+        .with_initial_env(initial_env.clone())
+        .eval(t)
+        .map(RichTerm::without_pos),
         Ok(mk_term::integer(2))
     );
 
-    let t = mk_term::let_in("x", mk_term::integer(2), mk_term::var("g"));
+    let t = mk_term::let_one_in("x", mk_term::integer(2), mk_term::var("g"));
     assert_eq!(
-        VirtualMachine::new_with_cache(DummyResolver {}, eval_cache.clone(), std::io::sink())
-            .with_initial_env(initial_env.clone())
-            .eval(t)
-            .map(RichTerm::without_pos),
+        VirtualMachine::new_with_cache(
+            DummyResolver {},
+            eval_cache.clone(),
+            std::io::sink(),
+            NullReporter {}
+        )
+        .with_initial_env(initial_env.clone())
+        .eval(t)
+        .map(RichTerm::without_pos),
         Ok(mk_term::integer(1))
     );
 
     // Shadowing of the initial environment
-    let t = mk_term::let_in("g", mk_term::integer(2), mk_term::var("g"));
+    let t = mk_term::let_one_in("g", mk_term::integer(2), mk_term::var("g"));
     assert_eq!(
-        VirtualMachine::new_with_cache(DummyResolver {}, eval_cache.clone(), std::io::sink())
-            .with_initial_env(initial_env.clone())
-            .eval(t)
-            .map(RichTerm::without_pos),
+        VirtualMachine::new_with_cache(
+            DummyResolver {},
+            eval_cache.clone(),
+            std::io::sink(),
+            NullReporter {}
+        )
+        .with_initial_env(initial_env.clone())
+        .eval(t)
+        .map(RichTerm::without_pos),
         Ok(mk_term::integer(2))
     );
 }
@@ -376,7 +395,10 @@ fn foreign_id() {
         RichTerm::from(Term::ForeignId(43)),
         RichTerm::from(Term::ForeignId(42)),
     );
-    assert_matches!(eval_no_import(t_eq), Err(EvalError::EqError { .. }));
+    assert_matches!(
+        eval_no_import(t_eq),
+        Err(EvalError::IncomparableValues { .. })
+    );
 
     // Opaque values cannot be merged (even if they're equal, since they can't get compared for equality).
     let t_merge = mk_term::op2(

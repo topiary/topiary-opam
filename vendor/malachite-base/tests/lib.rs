@@ -395,11 +395,13 @@ pub mod num {
         pub mod primitive_int_increasing_range;
     }
     pub mod factorization {
+        pub mod factor;
         pub mod is_prime;
         pub mod prime_indicator_sequence;
         pub mod prime_indicator_sequence_less_than;
         pub mod prime_sieve;
         pub mod primes;
+        pub mod primitive_root_prime;
     }
     pub mod float {
         pub mod basic {

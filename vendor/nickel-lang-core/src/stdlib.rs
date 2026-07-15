@@ -73,7 +73,6 @@ pub mod internals {
     generate_accessor!(bool);
     generate_accessor!(foreign_id);
     generate_accessor!(string);
-    generate_accessor!(fail);
 
     generate_accessor!(array);
     generate_accessor!(array_dyn);
@@ -90,9 +89,10 @@ pub mod internals {
     generate_accessor!(enum_variant);
     generate_accessor!(forall_enum_tail);
 
-    generate_accessor!(record);
-    generate_accessor!(record_extend);
+    generate_accessor!(record_contract);
+    generate_accessor!(record_type);
     generate_accessor!(forall_record_tail);
+    generate_accessor!(forall_record_tail_excluded_only);
     generate_accessor!(dyn_tail);
     generate_accessor!(empty_tail);
 
@@ -101,6 +101,9 @@ pub mod internals {
     generate_accessor!(dict_dyn);
 
     generate_accessor!(stdlib_contract_equal);
+
+    generate_accessor!(naked_to_custom);
+    generate_accessor!(add_default_check_label);
 
     generate_accessor!(rec_default);
     generate_accessor!(rec_force);

@@ -1,3 +1,54 @@
+<a name="v0.12.4"></a>
+### v0.12.4 (2025-03-14)
+
+
+#### Features
+
+*   Avoid stack overflow on right-biased append docs
+
+<a name="v0.12.3"></a>
+### v0.12.3 (2023-09-21)
+
+
+#### Features
+
+*   Implement Pretty for Cow ([5897df33](https://github.com/Marwes/pretty.rs/commit/5897df33008890d434d2948f6c3c0f692c70eeae))
+
+
+
+<a name="v0.12.2"></a>
+### v0.12.2 (2023-09-21)
+
+
+#### Bug Fixes
+
+*   CJK characters display width ([d1cdc4ef](https://github.com/Marwes/pretty.rs/commit/d1cdc4ef961864743e66bd245985549d58228aaf))
+
+
+
+<a name="v0.12.1"></a>
+### v0.12.1 (2023-04-19)
+
+
+#### Bug Fixes
+
+*   Don't leak the indentation of earlier documents into latter ones ([430bb457](https://github.com/Marwes/pretty.rs/commit/430bb4571f77362c45451063aba728d232503677))
+
+
+
+<a name="v0.12.0"></a>
+## v0.12.0 (2023-03-30)
+
+
+#### Features
+
+*   Add the BlockDoc formatter ([d4106e4e](https://github.com/Marwes/pretty.rs/commit/d4106e4e28d826755d36028d0cc57769d1261e44))
+
+#### Bug Fixes
+
+* Make `RcDoc` a wrapper around `Rc<Doc>`, not `Box<Doc>`
+
+
 <a name="v0.11.3"></a>
 ### v0.11.3 (2022-04-21)
 

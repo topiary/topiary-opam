@@ -1,11 +1,11 @@
 //! Web assembly interface to the REPL.
 use super::simple_frontend::{input, serialize, InputError, InputResult};
 use super::{Repl, ReplImpl};
-use crate::cache::Cache;
+use crate::cache::CacheHub;
 use crate::error::IntoDiagnostics;
 use crate::eval::cache::CacheImpl;
+use crate::files::{FileId, Files};
 use crate::serialize::ExportFormat;
-use codespan::{FileId, Files};
 use codespan_reporting::{
     diagnostic::{Diagnostic, Label, LabelStyle, Severity},
     term::termcolor::Ansi,
@@ -84,7 +84,7 @@ pub struct WasmErrorDiagnostic {
 }
 
 impl WasmErrorDiagnostic {
-    fn from_codespan(files: &Files<String>, diag: Diagnostic<FileId>) -> Self {
+    fn from_codespan(files: &Files, diag: Diagnostic<FileId>) -> Self {
         WasmErrorDiagnostic {
             severity: diag.severity.into(),
             msg: diag.message,
@@ -110,7 +110,7 @@ pub struct WasmErrorLabel {
 }
 
 impl WasmErrorLabel {
-    fn from_codespan(files: &Files<String>, label: Label<FileId>) -> Self {
+    fn from_codespan(files: &Files, label: Label<FileId>) -> Self {
         let start_loc = files.location(label.file_id, label.range.start as u32);
         let end_loc = files.location(label.file_id, label.range.end as u32);
 
@@ -191,16 +191,16 @@ impl WasmInputResult {
     }
 
     /// Make a `WasmInputResult` from an `InputError`.
-    fn error(cache: &mut Cache, error: InputError) -> Self {
+    fn error(cache: &mut CacheHub, error: InputError) -> Self {
         let (msg, errors) = match error {
             InputError::NickelError(err) => {
-                let stdlib_ids = cache.get_all_stdlib_modules_file_id();
-                let diagnostics = err.into_diagnostics(cache.files_mut(), stdlib_ids.as_ref());
+                let mut files = cache.sources.files().clone();
+                let diagnostics = err.into_diagnostics(&mut files);
 
-                let msg = diags_to_string(cache, &diagnostics);
+                let msg = diags_to_string(&files, &diagnostics);
                 let errors: Vec<WasmErrorDiagnostic> = diagnostics
                     .into_iter()
-                    .map(|diag| WasmErrorDiagnostic::from_codespan(cache.files(), diag))
+                    .map(|diag| WasmErrorDiagnostic::from_codespan(cache.sources.files(), diag))
                     .collect();
                 (msg, errors)
             }
@@ -249,7 +249,7 @@ pub struct ReplState(ReplImpl<CacheImpl>);
 /// WASM-compatible wrapper around `serialize::ExportFormat`.
 #[wasm_bindgen]
 pub enum WasmExportFormat {
-    Raw = "raw",
+    Text = "text",
     Json = "json",
     Yaml = "yaml",
     Toml = "toml",
@@ -262,7 +262,7 @@ impl TryInto<ExportFormat> for WasmExportFormat {
 
     fn try_into(self) -> Result<ExportFormat, ExportFormaParseError> {
         match self {
-            WasmExportFormat::Raw => Ok(ExportFormat::Raw),
+            WasmExportFormat::Text => Ok(ExportFormat::Text),
             WasmExportFormat::Json => Ok(ExportFormat::Json),
             WasmExportFormat::Yaml => Ok(ExportFormat::Yaml),
             WasmExportFormat::Toml => Ok(ExportFormat::Toml),
@@ -300,7 +300,7 @@ impl std::io::Write for CallbackWriter {
             let js_string = JsValue::from_str(String::from_utf8_lossy(&self.buf).trim());
             callback
                 .call1(&JsValue::NULL, &js_string)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
+                .map_err(|e| std::io::Error::other(format!("{e:?}")))?;
         }
         self.buf.clear();
         Ok(())
@@ -308,27 +308,25 @@ impl std::io::Write for CallbackWriter {
 }
 
 /// Render error diagnostics as a string.
-pub fn diags_to_string(cache: &mut Cache, diags: &[Diagnostic<FileId>]) -> String {
+pub fn diags_to_string(files: &Files, diags: &[Diagnostic<FileId>]) -> String {
     let mut buffer = Ansi::new(Cursor::new(Vec::new()));
     let config = codespan_reporting::term::Config::default();
 
     diags
         .iter()
-        .try_for_each(|d| {
-            codespan_reporting::term::emit(&mut buffer, &config, cache.files_mut(), d)
-        })
+        .try_for_each(|d| codespan_reporting::term::emit(&mut buffer, &config, files, d))
         .unwrap();
 
     String::from_utf8(buffer.into_inner().into_inner()).unwrap()
 }
 
 /// Render an error as a string (similar to [`diags_to_string`](./meth.diags_to_string.html)).
-pub fn err_to_string(cache: &mut Cache, error: InputError) -> String {
+pub fn err_to_string(cache: &CacheHub, error: InputError) -> String {
     match error {
         InputError::NickelError(nickel_err) => {
-            let stdlib_ids = cache.get_all_stdlib_modules_file_id();
-            let diags = nickel_err.into_diagnostics(cache.files_mut(), stdlib_ids.as_ref());
-            diags_to_string(cache, &diags)
+            let mut files = cache.sources.files().clone();
+            let diags = nickel_err.into_diagnostics(&mut files);
+            diags_to_string(&files, &diags)
         }
         InputError::Other(msg) => msg,
     }

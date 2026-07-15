@@ -1,4 +1,4 @@
-# Nickel standrd library. This file is included at compile-time in the nickel
+# Nickel standard library. This file is included at compile-time in the nickel
 # binary and populates the `std` entry in the initial environment.
 #
 # It would be nice to split this module file into separate files, such as
@@ -52,21 +52,24 @@
 
           # Examples
 
-          ```nickel
-          ([] | std.array.NonEmpty) =>
-            error
-          ([ 1 ] | std.array.NonEmpty) =>
-            [ 1 ]
+          ```nickel multiline
+          ([] | std.array.NonEmpty)
+          # => error: contract broken by a value
+
+          ([ 1 ] | std.array.NonEmpty)
+          # => [ 1 ]
           ```
         "%
-      = fun label value =>
-        if %typeof% value == 'Array then
-          if %array/length% value != 0 then
-            value
+      =
+        %contract/custom% (fun _label value =>
+          if %typeof% value == 'Array then
+            if %array/length% value != 0 then
+              'Ok value
+            else
+              'Error { message = "empty array" }
           else
-            %blame% (%label/with_message% "empty array" label)
-        else
-          %blame% (%label/with_message% "not a array" label),
+            'Error { message = "not a array" }
+        ),
 
     first
       : forall a. Array a -> a
@@ -77,8 +80,8 @@
           # Examples
 
           ```nickel
-          std.array.first [ "this is the head", "this is not" ] =>
-            "this is the head"
+          std.array.first [ "this is the head", "this is not" ]
+          # => "this is the head"
           ```
         "%
       = fun array => %array/at% array 0,
@@ -92,8 +95,8 @@
           # Examples
 
           ```nickel
-          std.array.last [ "this is the head", "this is not" ] =>
-            "this is not"
+          std.array.last [ "this is the head", "this is not" ]
+          # => "this is not"
           ```
         "%
       = fun array => %array/at% array (%array/length% array - 1),
@@ -107,8 +110,8 @@
           # Examples
 
           ```nickel
-          std.array.drop_first [ 1, 2, 3 ] =>
-            [ 2, 3 ]
+          std.array.drop_first [ 1, 2, 3 ]
+          # => [ 2, 3 ]
           ```
         "%
       = fun array => %array/slice% 1 (%array/length% array) array,
@@ -122,8 +125,8 @@
           # Examples
 
           ```nickel
-          std.array.drop_last [ 1, 2, 3 ] =>
-            [ 1, 2 ]
+          std.array.drop_last [ 1, 2, 3 ]
+          # => [ 1, 2 ]
           ```
         "%
       = fun array => %array/slice% 0 (%array/length% array - 1) array,
@@ -136,8 +139,8 @@
           # Examples
 
           ```nickel
-          std.array.length [ "Hello,", " World!" ] =>
-            2
+          std.array.length [ "Hello,", " World!" ]
+          # => 2
           ```
         "%
       = fun l => %array/length% l,
@@ -151,8 +154,8 @@
           # Examples
 
           ```nickel
-          std.array.map (fun x => x + 1) [ 1, 2, 3 ] =>
-            [ 2, 3, 4 ]
+          std.array.map (fun x => x + 1) [ 1, 2, 3 ]
+          # => [ 2, 3, 4 ]
           ```
         "%
       = fun f l => %array/map% l f,
@@ -166,8 +169,8 @@
           # Examples
 
           ```nickel
-          std.array.at 3 [ "zero", "one", "two", "three", "four" ] =>
-            "three"
+          std.array.at 3 [ "zero", "one", "two", "three", "four" ]
+          # => "three"
           ```
         "%
       = fun n l => %array/at% l n,
@@ -182,12 +185,12 @@
 
           # Examples
 
-          ```nickel
-          std.array.at_or 3 "default" [ "zero", "one", "two", "three" ] =>
-            "three"
+          ```nickel multiline
+          std.array.at_or 3 "default" [ "zero", "one", "two", "three" ]
+          # => "three"
 
-          std.array.at_or 3 "default" [ "zero", "one" ] =>
-            "default"
+          std.array.at_or 3 "default" [ "zero", "one" ]
+          # => "default"
           ```
         "%
       = fun n default_value array =>
@@ -204,8 +207,8 @@
           # Examples
 
           ```nickel
-            std.array.concat [ 1, 2, 3 ] [ 4, 5, 6 ] =>
-              [ 1, 2, 3, 4, 5, 6 ]
+            std.array.concat [ 1, 2, 3 ] [ 4, 5, 6 ]
+            # => [ 1, 2, 3, 4, 5, 6 ]
           ```
         "%
       = fun l1 l2 => l1 @ l2,
@@ -234,9 +237,12 @@
 
             ```nickel
             std.array.fold_right (-) 0 [1, 2, 3, 4]
-             => -2
+            # => -2
+            ```
+
+            ```nickel
             std.array.fold_left (-) 0 [1, 2, 3, 4]
-             => -10
+            # => -10
             ```
           - If the folded function is associative, both `fold_right` and
             `fold_left` return the same result. In that case, **`fold_left` is
@@ -270,9 +276,9 @@
           # Examples
 
           ```nickel
-          fold_left (fun acc e => acc + e) 0 [ 1, 2, 3 ] =>
-            (((0 + 1) + 2) 3) =>
-            6
+          fold_left (fun acc e => acc + e) 0 [ 1, 2, 3 ]
+          # => (((0 + 1) + 2) + 3)
+          # => 6
           ```
         "%
       = fun f acc array =>
@@ -290,6 +296,58 @@
               in
               go next_acc (n + 1)
               |> %seq% next_acc
+          in
+          go acc 0,
+
+    try_fold_left
+      : forall a b c. (a -> c -> [| 'Ok a, 'Error b |]) -> a -> Array c -> [| 'Ok a, 'Error b |]
+      | doc m%"
+          Folds a function over an array from left to right, possibly stopping early.
+
+          This differs from `fold_left` in that the function being folded returns either
+          `'Error y` (meaning that the folding should terminate, immediately returning
+          `'Error y`) or `'Ok acc` (meaning that the folding should continue as usual,
+          with the new accumulator `acc`). This early return can be used as an optimization,
+          to avoid evaluating the whole array.
+
+          # Examples
+
+          This defines a function that returns the first element satisfying a predicate.
+
+          ```nickel
+          let find_first: forall a. (a -> Bool) -> Array a -> [| 'Some a, 'None |]
+            = fun pred xs =>
+              # Our fold function, which just ignores the accumulator and immediately
+              # returns an element if it satisfies the predicate. Note that `'Error`
+              # (which is the short-circuiting branch) means that we found something.
+              let f = fun _acc x => if pred x then 'Error x else 'Ok null in
+              try_fold_left f null xs |> match {
+                'Ok _ => 'None,
+                'Error x => 'Some x,
+              }
+          in
+          let even = fun x => x % 2 == 0 in
+          find_first even [1, 3, 4, 5, 2]
+          # => 'Some 4
+          ```
+        "%
+      = fun f acc array =>
+        let length = %array/length% array in
+        if length == 0 then
+          'Ok acc
+        else
+          let rec go = fun acc n =>
+            if n == length then
+              'Ok acc
+            else
+              %array/at% array n
+              |> f acc
+              |> match {
+                'Error e => 'Error e,
+                'Ok next_acc =>
+                  go next_acc (n + 1)
+                  |> %seq% next_acc
+              }
           in
           go acc 0,
 
@@ -312,9 +370,9 @@
           # Examples
 
           ```nickel
-          std.array.fold_right (fun e acc => acc @ [e]) [] [ 1, 2, 3 ] =>
-            ((([] @ [3]) @ [2]) @ [1]) =>
-            [ 3, 2, 1 ]
+          std.array.fold_right (fun e acc => acc @ [e]) [] [ 1, 2, 3 ]
+          # => ((([] @ [3]) @ [2]) @ [1])
+          # => [ 3, 2, 1 ]
           ```
         "%
       = fun f fst l =>
@@ -335,8 +393,8 @@
           # Examples
 
           ```nickel
-          std.array.prepend 1 [ 2, 3 ] =>
-            [ 1, 2, 3 ]
+          std.array.prepend 1 [ 2, 3 ]
+          # => [ 1, 2, 3 ]
           ```
         "%
       = fun x l => [x] @ l,
@@ -349,8 +407,8 @@
           # Examples
 
           ```nickel
-          std.array.append 3 [ 1, 2 ] =>
-            [ 1, 2, 3 ]
+          std.array.append 3 [ 1, 2 ]
+          # => [ 1, 2, 3 ]
           ```
         "%
       = fun x l => l @ [x],
@@ -363,11 +421,11 @@
           # Examples
 
           ```nickel
-          std.array.reverse [ 1, 2, 3 ] =>
-            [ 3, 2, 1 ]
+          std.array.reverse [ 1, 2, 3 ]
+          # => [ 3, 2, 1 ]
           ```
         "%
-      = fun l => fold_left (fun acc e => [e] @ acc) [] l,
+      = fun l => fold_right (fun e acc => acc @ [e]) [] l,
 
     filter
       : forall a. (a -> Bool) -> Array a -> Array a
@@ -377,8 +435,8 @@
           # Examples
 
           ```nickel
-          std.array.filter (fun x => x <= 3) [ 4, 3, 2, 5, 1 ] =>
-            [ 3, 2, 1 ]
+          std.array.filter (fun x => x <= 3) [ 4, 3, 2, 5, 1 ]
+          # => [ 3, 2, 1 ]
           ```
         "%
       = fun pred l => fold_left (fun acc x => if pred x then acc @ [x] else acc) [] l,
@@ -391,11 +449,11 @@
           # Examples
 
           ```nickel
-          std.array.flatten [[1, 2], [3, 4]] =>
-            [1, 2, 3, 4]
+          std.array.flatten [[1, 2], [3, 4]]
+          # => [1, 2, 3, 4]
           ```
         "%
-      = fun l => fold_right (fun l acc => l @ acc) [] l,
+      = fun l => fold_left (fun acc l => acc @ l) [] l,
 
     all
       : forall a. (a -> Bool) -> Array a -> Bool
@@ -405,11 +463,12 @@
 
           # Examples
 
-          ```nickel
-          std.array.all (fun x => x < 3) [ 1, 2 ] =>
-            true
-          std.array.all (fun x => x < 3) [ 1, 2, 3 ] =>
-            false
+          ```nickel multiline
+          std.array.all (fun x => x < 3) [ 1, 2 ]
+          # => true
+
+          std.array.all (fun x => x < 3) [ 1, 2, 3 ]
+          # => false
           ```
         "%
       = fun pred l => fold_right (fun x acc => if pred x then acc else false) true l,
@@ -422,11 +481,12 @@
 
           # Examples
 
-          ```nickel
-          std.array.any (fun x => x < 3) [ 1, 2, 3, 4 ] =>
-            true
-          std.array.any (fun x => x < 3) [ 5, 6, 7, 8 ] =>
-            false
+          ```nickel multiline
+          std.array.any (fun x => x < 3) [ 1, 2, 3, 4 ]
+          # => true
+
+          std.array.any (fun x => x < 3) [ 5, 6, 7, 8 ]
+          # => false
           ```
         "%
       = fun pred l => fold_right (fun x acc => if pred x then true else acc) false l,
@@ -451,8 +511,8 @@
           # Examples
 
           ```nickel
-          std.array.elem 3 [ 1, 2, 3, 4, 5 ] =>
-            true
+          std.array.elem 3 [ 1, 2, 3, 4, 5 ]
+          # => true
           ```
         "%
       = fun elt => any (fun x => x == elt),
@@ -467,13 +527,13 @@
           # Examples
 
           ```nickel
-          std.array.partition (fun x => x < 5) [ 2, 4, 5, 3, 7, 8, 6 ] =>
-            { right = [ 2, 4, 3 ], wrong = [ 5, 7, 8, 6 ] }
+          std.array.partition (fun x => x < 5) [ 2, 4, 5, 3, 7, 8, 6 ]
+          # => { right = [ 2, 4, 3 ], wrong = [ 5, 7, 8, 6 ] }
           ```
         "%
       = fun pred l =>
         let aux = fun acc x =>
-          if (pred x) then
+          if pred x then
             { right = acc.right @ [x], wrong = acc.wrong }
           else
             { right = acc.right, wrong = acc.wrong @ [x] }
@@ -491,11 +551,40 @@
           # Examples
 
           ```nickel
-          std.array.generate (fun x => x * x) 4 =>
-            [ 0, 1, 4, 9 ]
+          std.array.generate (fun x => x * x) 4
+          # => [ 0, 1, 4, 9 ]
           ```
         "%
       = fun f n => %array/generate% n f,
+
+    compare
+      : forall a. (a -> a -> [| 'Lesser, 'Equal, 'Greater |]) -> Array a -> Array a -> [| 'Lesser, 'Equal, 'Greater |]
+      | doc m%"
+          `compare order a b` lexicographically compares `a` and `b`, using `order` to
+          compare the individual elements.
+
+          # Examples
+
+          ```nickel multiline
+          std.array.compare std.number.compare [3, 1, 4] [6, 2, 8]
+          # => 'Lesser
+
+          std.array.compare std.string.compare ["hello", "world"] ["hello"]
+          # => 'Greater
+          ```
+        "%
+      =
+        let refine = fun left right =>
+          left
+          |> match {
+            'Equal => right,
+            _ => left,
+          }
+        in
+        fun order a b =>
+          zip_with order a b
+          @ [std.number.compare (length a) (length b)]
+          |> fold_right refine 'Equal,
 
     sort
       : forall a. (a -> a -> [| 'Lesser, 'Equal, 'Greater |]) -> Array a -> Array a
@@ -513,7 +602,7 @@
             else
               'Greater)
             [ 4, 5, 1, 2 ]
-          => [ 1, 2, 4, 5 ]
+          # => [ 1, 2, 4, 5 ]
           ```
         "%
       #TODO: maybe inline partition to avoid contract checks?
@@ -537,7 +626,7 @@
 
           ```nickel
           std.array.flat_map (fun x => [x, x]) [1, 2, 3]
-            => [1, 1, 2, 2, 3, 3]
+          # => [1, 1, 2, 2, 3, 3]
           ```
         "%
       = fun f xs => map f xs |> flatten,
@@ -549,13 +638,15 @@
 
           # Examples
 
-          ```nickel
+          ```nickel multiline
           std.array.intersperse ", " [ "Hello", "wonderful", "world!" ]
-            => [ "Hello", ", ", "wonderful", ", ", "world!" ]
+          # => [ "Hello", ", ", "wonderful", ", ", "world!" ]
+
           std.array.intersperse ", " [ "Hello" ]
-            => [ "Hello" ]
+          # => [ "Hello" ]
+
           std.array.intersperse ", " []
-            => []
+          # => []
           ```
         "%
       = fun v array =>
@@ -563,8 +654,10 @@
         if length <= 1 then
           array
         else
-          let first = %array/at% array 0 in
-          let rest = %array/slice% 1 length array in
+          let
+            first = %array/at% array 0,
+            rest = %array/slice% 1 length array,
+          in
           [first] @ (flat_map (fun a => [v, a]) rest),
 
     slice
@@ -581,13 +674,15 @@
 
           # Examples
 
-          ```nickel
+          ```nickel multiline
           std.array.slice 1 3 [ 0, 1, 2, 3, 4, 5]
-            => [ 1, 2 ]
+          # => [ 1, 2 ]
+
           std.array.slice 0 3 [ "Hello", "world", "!" ]
-            => [ "Hello", "world", "!" ]
+          # => [ "Hello", "world", "!" ]
+
           std.array.slice 2 3 [ "Hello", "world", "!" ]
-            => [ "!" ]
+          # => [ "!" ]
            ```
         "%
       = fun start end value => %array/slice% start end value,
@@ -607,13 +702,15 @@
 
           # Examples
 
-          ```nickel
+          ```nickel multiline
           std.array.split_at 2 [ 0, 1, 2, 3, 4, 5]
-            => { left = [ 0, 1 ], right = [ 2, 3, 4, 5 ] }
+          # => { left = [ 0, 1 ], right = [ 2, 3, 4, 5 ] }
+
           std.array.split_at 0 [ "Hello", "world", "!" ]
-            => { left = [  ], right = [ "Hello", "world", "!" ] }
+          # => { left = [  ], right = [ "Hello", "world", "!" ] }
+
           std.array.split_at 3 [ "Hello", "world", "!" ]
-            => { left = [ "Hello", "world", "!" ], right = [  ] }
+          # => { left = [ "Hello", "world", "!" ], right = [  ] }
           ```
         "%
       = fun index value =>
@@ -634,11 +731,12 @@
 
           # Examples
 
-          ```nickel
+          ```nickel multiline
           std.array.replicate 0 false
-            => [ ]
+          # => [ ]
+
           std.array.replicate 5 "x"
-            => [ "x", "x", "x", "x", "x" ]
+          # => [ "x", "x", "x", "x", "x" ]
           ```
         "%
       = fun n x => %array/generate% n (fun _i => x),
@@ -660,7 +758,7 @@
 
           ```nickel
           std.array.range_step (-1.5) 2 0.5
-           => [ -1.5, -1, -0.5, 0, 0.5, 1, 1.5 ]
+           # => [ -1.5, -1, -0.5, 0, 0.5, 1, 1.5 ]
           ```
         "%
       = fun start end step =>
@@ -687,7 +785,7 @@
 
           ```nickel
           std.array.range 0 5
-           => [ 0, 1, 2, 3, 4 ]
+          # => [ 0, 1, 2, 3, 4 ]
           ```
         "%
       = fun start end => range_step start end 1,
@@ -717,13 +815,14 @@
 
           # Examples
 
-          ```nickel
+          ```nickel multiline
           std.array.reduce_left (@) [ [1, 2], [3], [4,5] ]
-            => (([1, 2] @ [3]) @ [4,5])
-            => [ 1, 2, 4, 5 ]
+          # => (([1, 2] @ [3]) @ [4,5])
+          # => [ 1, 2, 3, 4, 5 ]
+
           std.array.reduce_left (-) [ 1, 2, 3, 4]
-            => ((1 - 2) - 3) - 4
-            => -8
+          # => ((1 - 2) - 3) - 4
+          # => -8
           ```
         "%
       = fun f array =>
@@ -757,19 +856,22 @@
 
           # Examples
 
-          ```nickel
+          ```nickel multiline
           std.array.reduce_right (@) [ [1, 2], [3], [4,5] ]
-            => [1, 2] @ ([3] @ [4,5])
-            => [ 1, 2, 4, 5 ]
+          # => [1, 2] @ ([3] @ [4,5])
+          # => [ 1, 2, 3, 4, 5 ]
+
           std.array.reduce_right (-) [ 1, 2, 3, 4]
-            => 1 - (2 - (3 - 4))
-            => -2
+          # => 1 - (2 - (3 - 4))
+          # => -2
           ```
         "%
       = fun f array =>
         let last_index = %array/length% array - 1 in
-        let last = %array/at% array last_index in
-        let rest = %array/slice% 0 last_index array in
+        let
+          last = %array/at% array last_index,
+          rest = %array/slice% 0 last_index array,
+        in
         fold_right f last rest,
 
     zip_with
@@ -781,13 +883,15 @@
 
           # Examples
 
-          ```nickel
+          ```nickel multiline
           std.array.zip_with (+) [1, 2, 3] [4, 5, 6]
-            => [5, 7, 9]
+          # => [5, 7, 9]
+
           std.array.zip_with (*) [1, 2] [4, 5, 6]
-            => [4, 10]
+          # => [4, 10]
+
           std.array.zip_with (-) [1, 2, 3] [4, 5]
-            => [-3, -3]
+          # => [-3, -3]
           ```
         "%
       = fun f xs ys =>
@@ -805,20 +909,175 @@
           # Examples
 
           ```nickel
-          std.array.map_with_index (fun i x => i + x + 1) [ 1, 2, 3 ] =>
-            [ 2, 4, 6 ]
+          std.array.map_with_index (fun i x => i + x + 1) [ 1, 2, 3 ]
+          # => [ 2, 4, 6 ]
           ```
         "%
       = fun f xs =>
         xs
         |> std.array.length
         |> std.array.generate (fun i => f i (std.array.at i xs)),
+
+    filter_map
+      : forall a b. (a -> [| 'Some b, 'None |]) -> Array a -> Array b
+      | doc m%"
+        Applies a function to every element in the given array, filtering out
+        `'None` results. `filter_map` combines `std.array.map` and
+        `std.array.filter` in a single pass.
+
+        # Examples
+
+        ```nickel
+        ["1", "hello", "2", "world"]
+        |> std.array.filter_map (fun x =>
+          if std.string.is_match "^[+-]?\\d+$" x then
+            'Some (std.string.to_number x)
+          else
+            'None
+        )
+        # => [ 1, 2 ]
+        ```
+      "%
+      = fun f array =>
+        fold_left
+          (fun acc x =>
+            f x
+            |> match {
+              'Some y => acc @ [y],
+              'None => acc,
+            }
+          )
+          []
+          array,
+
+    dedup
+      : Array Dyn -> Array Dyn
+      | doc m%"
+        Removes duplicates from an array.
+
+        # Performance
+
+        This function relies on equality and has a quadratic complexity in the
+        length of the array. It might thus be slow for large arrays or if
+        called repeatedly. Prefer `std.array.sort_dedup` or
+        `std.array.dedup_sorted` if you have efficiency concerns.
+
+        # Examples
+
+        ```nickel multiline
+        std.array.dedup [ 4, 2, 1, 3, 5, 2, 1, 4 ]
+        # => [ 4, 2, 1, 3, 5 ]
+
+        std.array.dedup [ "hello", "world", "hello" ]
+        # => [ "hello", "world" ]
+        ```
+      "%
+      = fun array =>
+        let length = %array/length% array in
+
+        fold_left
+          (fun acc x =>
+            if elem x acc then
+              acc
+            else
+              acc @ [x]
+          )
+          []
+          array,
+
+    dedup_sorted
+      : forall a. (a -> a -> [| 'Lesser, 'Equal, 'Greater |]) -> Array a -> Array a
+      | doc m%"
+        Given an array already sorted by the given ordering function, remove duplicates.
+
+        # Preconditions
+
+        The input array must be sorted using the same order as provided to this
+        function. Otherwise, some duplicates might not be removed.
+
+        # Performance
+
+        As opposed to `std.array.dedup`, this function has a linear time
+        complexity, which should improve performance especially on large arrays.
+
+        If you sort the array only to remove duplicates, you can use
+        `std.array.sort_dedup` directly (which handles both sorting and
+        deduplication).
+
+        # Examples
+
+        ```nickel multiline
+        std.array.dedup_sorted std.number.compare [ 1, 2, 2, 3, 4, 4, 4, 5 ]
+        # => [ 1, 2, 3, 4, 5 ]
+
+        std.array.dedup_sorted std.string.compare [ "hello", "world", "world" ]
+        # => [ "hello", "world" ]
+        ```
+      "%
+      = fun cmp array =>
+        let length = %array/length% array in
+
+        let rec go = fun acc n =>
+          if n == length then
+            acc
+          else
+            let x = %array/at% array n in
+
+            # we would prefer to use the primitive equality here instead of
+            # relying on `cmp` returning `'Equal`. The latter 1. requires that
+            # the user-provided function is correct and 2. is more costly.
+            #
+            # Unfortunately, that would break parametricity and require to
+            # substitute `a` for `Dyn` in the type of `sort_dedup`, which makes
+            # it more annoying to use with otherwise statically typed comparison
+            # function. So for now, we rely on the comparison function.
+            let acc =
+              if n == 0
+              || cmp (%array/at% array (n - 1)) x != 'Equal then
+                acc @ [x]
+              else
+                acc
+            in
+
+            go acc (n + 1)
+        in
+
+        go [] 0,
+
+    sort_dedup
+      : forall a. (a -> a -> [| 'Lesser, 'Equal, 'Greater |]) -> Array a -> Array a
+      | doc m%"
+        Sorts an array based on the provided comparison operator and removes
+        duplicates.
+
+        This is a combination of `std.array.sort` and `std.array.dedup_sorted`.
+
+        # Performance
+
+        As opposed to `std.array.dedup`, this function has a better time
+        complexity (`O(n*log(n))` where `n` is the size of the array), which
+        should improve performance especially on large arrays.
+
+        # Examples
+
+        ```nickel multiline
+        std.array.sort_dedup std.number.compare [ 4, 2, 1, 3, 5, 2, 1, 4 ]
+        # => [ 1, 2, 3, 4, 5 ]
+
+        std.array.sort_dedup std.string.compare [ "world", "hello", "world" ]
+        # => [ "hello", "world" ]
+        ```
+      "%
+      = fun cmp array =>
+        array
+        |> sort cmp
+        |> dedup_sorted cmp,
   },
 
   contract = {
     Equal
       | doc m%"
-        `Equal` is a contract enforcing equality to a given constant.
+        `Equal` is a delayed contract enforcing equality to a given constant.
 
         `Equal` is lazy over arrays and records. When checking such values,
         `Equal` doesn't test for equality of elements right away (it just tests
@@ -828,46 +1087,15 @@
 
         # Example
 
-        ```nickel
+        ```nickel multiline
         1 + 4 | std.contract.Equal 5
-         => 5
+        # => 5
+
         4 | std.contract.Equal 5
-         => error: contract broken by a value
+        # => error: contract broken by a value
         ```
       "%
       =
-        let fields_diff
-          | doc m%"
-            Compute the difference between the fields of two records.
-            `fields_diff` isn't concerned with the actual values themselves, but
-            just with field names.
-
-            Return a record of type
-            `{extra : Array String, missing: Array String}`, relative to the
-            first argument `constant`.
-          "%
-          = fun constant value =>
-            let diff =
-              value
-              |> std.record.fields
-              |> std.array.fold_left
-                (
-                  fun acc field =>
-                    if std.record.has_field field acc.rest then
-                      {
-                        extra = acc.extra,
-                        rest = std.record.remove field acc.rest,
-                      }
-                    else
-                      {
-                        extra = std.array.append field acc.extra,
-                        rest = acc.rest,
-                      }
-                )
-                { extra = [], rest = constant }
-            in
-            { extra = diff.extra, missing = std.record.fields diff.rest }
-          in
         let blame_fields_differ = fun qualifier fields ctr_label =>
           let plural = if %array/length% fields == 1 then "" else "s" in
           ctr_label
@@ -875,6 +1103,7 @@
           |> label.append_note "`std.contract.Equal some_record` requires that the checked value is equal to the record `some_record`, but the sets of their fields differ."
           |> blame
         in
+
         fun constant =>
           let constant_type = %typeof% constant in
           let check_typeof_eq = fun ctr_label value =>
@@ -898,7 +1127,7 @@
               value
             else
               ctr_label
-              |> label.with_message "expected `%{%to_string% constant_type}`, got `%{%to_string% value_type}`"
+              |> label.with_message "expected `%{constant_type}`, got `%{value_type}`"
               |> label.append_note "`std.contract.Equal some_value` requires that the checked value is equal to `some_value`, but they don't have the same type."
               |> blame
           in
@@ -911,18 +1140,23 @@
               let contract_map = %record/map% constant (fun _key => Equal) in
               fun ctr_label value =>
                 let value = check_typeof_eq ctr_label value in
-                let diff = fields_diff constant value in
-                if %array/length% diff.extra != 0 then
-                  blame_fields_differ "extra" diff.extra ctr_label
-                else if %array/length% diff.missing != 0 then
-                  blame_fields_differ "missing" diff.missing ctr_label
+                let split_result = %record/split_pair% constant value in
+                if split_result.right_only != {} then
+                  blame_fields_differ
+                    "extra"
+                    (%record/fields% split_result.right_only)
+                    ctr_label
+                else if split_result.left_only != {} then
+                  blame_fields_differ
+                    "missing"
+                    (%record/fields% split_result.left_only)
+                    ctr_label
                 else
                   %contract/record_lazy_apply%
                     ctr_label
                     value
-                    (
-                      fun field =>
-                        contract_map."%{field}"
+                    (fun field =>
+                      contract_map."%{field}"
                     ),
             'Array =>
               fun ctr_label value =>
@@ -931,23 +1165,24 @@
                 if value_length == %array/length% constant then
                   %array/generate%
                     value_length
-                    (
-                      fun i =>
-                        %array/at% value i
-                        |> std.contract.apply (Equal (%array/at% constant i)) ctr_label
+                    (fun i =>
+                      %array/at% value i
+                      |> std.contract.apply (Equal (%array/at% constant i)) ctr_label
                     )
                 else
                   ctr_label
-                  |> label.with_message "array length mismatch (expected `%{%to_string% (%array/length% constant)}`, got `%{%to_string% value_length})`"
+                  |> label.with_message "array length mismatch (expected `%{%array/length% constant}`, got `%{value_length})`"
                   |> label.append_note "`std.contract.Equal some_array` requires that the checked value is equal to the array `some_array`, but their lengths differ."
                   |> blame,
 
             # Outside of lazy data structures, we just use (==)
             _ =>
               fun ctr_label value =>
-                value
-                |> check_typeof_eq ctr_label
-                |> from_predicate ((==) constant) ctr_label,
+                let value = check_typeof_eq ctr_label value in
+                if value == constant then
+                  value
+                else
+                  %blame% ctr_label,
           },
 
     blame
@@ -964,11 +1199,13 @@
           # Examples
 
           ```nickel
-          IsZero = fun label value =>
+          let IsZero = fun label value =>
             if value == 0 then
               value
             else
               std.contract.blame label
+          in
+          0 | IsZero
           ```
         "%
       = fun label => %blame% label,
@@ -999,12 +1236,89 @@
         "%
       = fun message label => %blame% (%label/with_message% message label),
 
-    from_predicate
+    custom
+      : (
+        Dyn -> Dyn -> [|
+          'Ok Dyn,
+          'Error {
+            message | String | optional,
+            notes | Array String | optional,
+            blame_location | Dyn | optional,
+          }
+        |]
+      ) -> Dyn
       | doc m%"
-          Generates a contract from a boolean predicate.
+          Build a generic custom contract. Whenever possible, more restricted
+          constructors such as `std.contract.from_predicate` or
+          `std.contract.from_validator` should be used. However, the most
+          general `std.contract.custom` might be required to write delayed
+          contracts or contracts taking other contracts as parameters.
 
-          Type: `(Dyn -> Bool) -> (Label -> Dyn -> Dyn)`
-          (for technical reasons, this function isn't actually statically typed)
+          # Custom contracts
+
+          The argument of `std.contract.custom` is a function that takes a label
+          and the value to be checked, and returns `'Ok value` to return
+          the original value with potential delayed checks inside, or `'Error
+          {..}` to signal an immediate contract violation.
+
+          The label should only be used for delayed checks. The preferred method
+          to indicate a contract violation is to return `'Error {..}`.
+
+          For more details on custom contracts and delayed contracts, please
+          refer to the corresponding section of the user manual.
+
+          # Typing
+
+          Because Nickel doesn't currently have proper types for labels and
+          contracts, they are replaced with `Dyn` in the type signature. You can
+          think of the actual type of the delayed part as `(Label -> Dyn ->
+          [| ... |])`, and the return type of `custom` as `Contract`.
+
+          # Examples
+
+          ```nickel
+          let Nullable = fun Contract =>
+            std.contract.custom (fun label value =>
+              if value == null then
+                'Ok value
+              else
+                std.contract.check Contract label value
+            )
+          in
+
+          null | Nullable Number
+          # => null
+          ```
+        "%
+      = fun contract => %contract/custom% contract,
+
+    from_predicate
+      | (Dyn -> Bool) -> Dyn
+      | doc m%"
+          Build a contract from a boolean predicate.
+
+          # Contract application
+
+          Before Nickel 1.8, `from_predicate` used to wrap the predicate as a
+          naked function of a label and value. You could thus theoretically
+          apply it as a normal function, as in
+          `(std.contract.from_predicate my_pred) label value`. While possible,
+          this wasn't recommended nor really officially supported: all contracts
+          should be applied using a contract annotation or `std.contract.apply`
+          and its variants, as explained in the documentation of
+          `std.contract.apply`.
+
+          From Nickel 1.8 and onwards, `from_predicate` generates a bespoke
+          contract value that can only be used in an annotation, be passed to
+          `std.contract.apply` or other operations on contracts, but can't be
+          used as normal function anymore.
+
+          # Typing
+
+          Because Nickel doesn't currently have proper types for contracts, the
+          return type of `from_predicate` is simply `Dyn` in the type signature.
+          You should think of `from_predicate` as some returning a value of some
+          hypothetical type `Contract`.
 
           # Examples
 
@@ -1013,9 +1327,82 @@
           0 | IsZero
           ```
         "%
-      = fun pred label value => if pred value then value else %blame% label,
+      = fun pred =>
+        %contract/custom% (fun label value =>
+          if pred value then
+            'Ok value
+          else
+            'Error {}
+        ),
+
+    from_validator
+      | (
+        Dyn -> [|
+          'Ok,
+          'Error {
+            message
+              | String
+              | optional,
+            notes
+              | Array String
+              | optional,
+            blame_location
+              | Dyn
+              | optional,
+          }
+        |]
+      ) -> Dyn
+      | doc m%%"
+          Build a contract from a validator.
+
+          # Validator
+
+          A validator is a function returning either `'Ok` or `'Error {message,
+          notes}` with an optional error message and notes to display. Both
+          validators and predicates are immediate contracts: they must decide
+          right away if the value passes or fails (as opposed to delayed
+          contracts). But as opposed to predicates, validators have the
+          additional ability to customize the error reporting.
+
+          # Typing
+
+          Because Nickel doesn't currently have proper types for contracts, the
+          return type of `from_validator` is simply `Dyn` in the type signature.
+          You should think of `from_validator` as returning a value of some
+          hypothetical type `Contract`.
+
+          # Examples
+
+          ```nickel
+          let IsZero = std.contract.from_validator (match {
+            0 => 'Ok,
+            n if std.is_number n =>
+              'Error {
+                message = "expected 0, got %{n}",
+                notes = ["The value is a number, but it isn't 0"],
+              },
+            v =>
+              'Error { message = "expected a number, got a %{std.typeof v}" }
+          })
+          in
+
+          0 | IsZero
+          ```
+        "%%
+      # A validator turns out to be a valid custom contract as well (which just
+      # never returns a value with delayed checks)
+      = fun validator =>
+        %contract/custom% (fun label value =>
+          let result = validator value in
+
+          if result == 'Ok then
+            'Ok value
+          else
+            result
+        ),
 
     Sequence
+      | Array Dyn -> Dyn
       | doc m%"
           Apply multiple contracts from left to right.
 
@@ -1024,35 +1411,37 @@
 
           # Examples
 
-          ```nickel
+          ```nickel ignore
           x | std.contract.Sequence [ Foo, Bar ]
           ```
 
           is equivalent to
 
-          ```nickel
+          ```nickel ignore
           (x | Foo) | Bar
           ```
 
           This is useful in positions where one cannot apply multiple contracts,
           such as an argument to another contract:
 
-          ```nickel
+          ```nickel ignore
           x | Array (std.contract.Sequence [ Foo, Bar ])
           ```
 
           Or stored in a variable:
 
-          ```nickel
+          ```nickel ignore
           let C = std.contract.Sequence [ Foo, Bar ] in
           x | C
           ```
         "%
-      = fun contracts label value =>
-        std.array.fold_left
-          (fun acc contract => std.contract.apply contract label acc)
-          value
-          contracts,
+      = fun contracts =>
+        %contract/custom% (fun label value =>
+          std.array.try_fold_left
+            (fun acc Contract => std.contract.check Contract label acc)
+            value
+            contracts
+        ),
 
     label
       | doc m%"
@@ -1066,6 +1455,10 @@
           manipulated by the functions in this module. Labels thus offer a way to
           customize the error message that will be shown if a contract is broken.
 
+          Note that the label should only be used for delayed checks. Immediate
+          error reporting is better done in custom contracts by returning an
+          error value.
+
           The setters (`with_XXX` functions) always operate on the current error
           diagnostic, which is the last diagnotic on the stack. If the stack is
           empty, a fresh diagnostic is silently created when using a setter.
@@ -1074,12 +1467,13 @@
           can't be modified anymore. All diagnostics will be shown during error
           reporting, with the most recent being used as the main one.
 
-          `std.contract.apply` is the operation that pushes a new fresh diagnostic on
-          the stack, saving the previously current error diagnostic. The function
-          `std.contract.apply` is typically used to apply subcontracts inside a parent
-          contract. Stacking the current diagnostic potentially customized by
-          the parent contract saves the information inside, and provides a fresh
-          diagnostic for the child contract to use.
+          `std.contract.apply` and `std.contract.check` are the
+          operations that push a new fresh diagnostic on the stack, saving the
+          previously current error diagnostic. `apply` and friends are typically
+          used to apply subcontracts inside a parent contract. Stacking the
+          current diagnostic potentially customized by the parent contract saves
+          the information inside, and provides a fresh diagnostic for the child
+          contract to use.
         "%
       = {
         with_message
@@ -1102,23 +1496,32 @@
 
               # Examples
 
-              ```nickel
-              let ContractNum = std.contract.from_predicate (fun x => x > 0 && x < 50) in
+              This example implements a contract which ensures that the value is
+              a record with a field `foo` that is an even number.
 
-              let Contract = fun label value =>
-                if std.is_number value then
-                  std.contract.apply
-                    ContractNum
-                    (std.contract.label.with_message
-                      "num subcontract failed! (out of bound)"
-                      label
-                    )
-                    value
-                else
-                  value
+              ```nickel
+              let FooIsEven = std.contract.custom (fun label =>
+                match {
+                  record @ { foo, .. } =>
+                    'Ok (
+                      std.record.map (fun key value =>
+                        if key == "foo"
+                        && !(std.is_number value && value % 2 == 0) then
+                          label
+                          |> std.contract.label.with_message "field foo must be an even number"
+                          |> std.contract.blame
+                        else
+                          value
+                      )
+                      record
+                    ),
+                  _ => 'Error {},
+                }
+              )
               in
 
-              5 | Contract
+              { foo = 4, hello = "world" } | FooIsEven
+              # => { foo = 4, hello = "world" }
               ```
             "%
           = fun message label => %label/with_message% message label,
@@ -1143,26 +1546,24 @@
 
               # Examples
 
-              ```nickel
-              let ContractNum = std.contract.from_predicate (fun x => x > 0 && x < 50) in
+              This example is illustrative. In practice, returning `'Error {..}`
+              should always be preferred over manipulating the label directly,
+              at least whenever possible.
 
-              let Contract = fun label value =>
-                if std.is_number value then
-                  std.contract.apply
-                    ContractNum
-                    (label
-                     |> std.contract.label.with_message "num subcontract failed! (out of bound)"
-                     |> std.contract.label.with_notes [
-                          "The value was a number, but this number is outside the expected bounds",
-                          "The value must be a number between 0 and 50, both excluded",
-                        ]
-                    )
-                    value
-                else
-                  value
+              ```nickel
+              let AlwaysFailWithNotes = std.contract.custom (fun label _ =>
+                label
+                |> std.contract.label.with_notes [
+                  "This is note 1",
+                  "This is note 2",
+                ]
+                |> std.contract.blame
+              )
               in
 
-              5 | Contract
+              null | AlwaysFailWithNotes
+
+              # => error
               ```
             "%
           # the %label/with_notes% operator expects an array of strings which is
@@ -1178,40 +1579,89 @@
 
               # Examples
 
+              This example is illustrative. In practice, returning `'Error {..}`
+              should always be preferred over manipulating the label directly
+              whenever possible.
+
               ```nickel
-              let AlwaysFailWithNotes = fun label _value =>
+              let AlwaysFailWithNotes = std.contract.custom (fun label _ =>
                 label
                 |> std.contract.label.append_note "This is note 1"
                 |> std.contract.label.append_note "This is note 2"
                 |> std.contract.blame
+              )
               in
+
               null | AlwaysFailWithNotes
+              # => error
+              ```
             "%
           = fun note label => %label/append_note% note label,
       },
 
     apply
       | doc m%"
-          Applies a contract to a label and a value.
+          Applies a contract to a label and a value. Either aborts the execution
+          with a broken contract error if the contract fails, or proceeds with
+          the evaluation of the value.
 
-          Type: `Contract -> Label -> Dyn -> Dyn`
-          (for technical reasons, this function isn't actually statically typed)
+          A contract annotation such as `value | Contract` is eventually
+          translated (automatically) to a call to `std.contract.apply Contract label
+          value` where `label` is provided by the Nickel interpreter.
 
-          Nickel supports user-defined contracts defined as functions, but also
-          as records. Moreover, the interpreter performs additional bookkeeping
-          for error reporting when applying a contract in an expression
-          `value | Contract`. You should not use standard function application
-          to apply a contract, but this function instead.
+          Note that depending on the situation, you might need the variant
+          `std.contract.check` instead. Please refer to the documentation of
+          `std.contract.check` for more information.
+
+          # Type
+
+          For technical reasons, `apply` isn't statically typed nor protected by
+          a contract. The hypothetical type of `apply` is `Contract -> Label ->
+          Dyn -> Dyn` (note `Contract` and `Label` currently don't exist).
+
+          # Arguments
+
+          `apply` takes three arguments. The arguments are in order:
+
+          - a contract which is currently either a custom contract (produced by
+            the stdlib constructors `std.contract.custom`,
+            `std.contract.from_validator` or `std.contract.from_predicate`), a
+            record, a static type or a naked function (see legacy contracts
+            below).
+          - a label (see `std.contract.label`)
+          - the value to be checked
+
+          # Return value
+
+          `apply` returns the original value upon success, with potential
+          delayed checks inserted inside. Some contracts even return a modified
+          value, such as record contract which can set default values.
+
+          # Legacy contracts
+
+          For backward-compatibility reasons, the argument can also be a naked
+          function `Label -> Dyn -> Dyn`, but this is discouraged and will be
+          deprecated in the future. For such a contract, please wrap it using
+          `std.contract.custom` instead (the return type must be adapted).
 
           # Examples
 
+          This example is a custom re-implementation of the builtin contract
+          `[| 'Foo Number |]`. This makes for a short illustration of `apply`,
+          but you should of course just use the builtin contract in real-world
+          applications.
+
           ```nickel
-          let Nullable = fun param_contract label value =>
-            if value == null then null
-            else std.contract.apply param_contract label value
+          let FooOfNumber =
+            std.contract.custom
+              (fun label =>
+                match {
+                  'Foo arg => 'Ok ('Foo (std.contract.apply Number label arg)),
+                  _ => 'Error {},
+                }
+              )
           in
-          let Contract = Nullable {foo | Number} in
-          ({foo = 1} | Contract)
+          'Foo 3 | FooOfNumber
           ```
 
           # Diagnostics stack
@@ -1225,31 +1675,214 @@
           ## Illustration
 
           ```nickel
-          let ChildContract = fun label value =>
-            label
-            |> std.contract.label.with_message "child's message"
-            |> std.contract.label.append_note "child's note"
-            |> std.contract.blame
+          let ChildContract = std.contract.from_validator (fun _ =>
+            'Error {
+              message = "child's message",
+              notes = ["child's note"]
+            }
+          )
           in
 
-          let ParentContract = fun label value =>
-            let label =
-              label
-              |> std.contract.label.with_message "parent's message"
-              |> std.contract.label.append_note "parent's note"
-            in
-            std.contract.apply ChildContract label value
+          let ParentContract = std.contract.from_validator (fun _ =>
+            'Error {
+              message = "parent's message",
+              notes = ["parent's note"]
+            }
+          )
           in
 
           null | ParentContract
+          # => error: contract broken by a value
           ```
 
           This example will print two diagnostics: the main one, using the
           message and note of the child contract, and a secondary diagnostic,
           using the parent contract message and note.
+
+          This behavior is also observed when manipulating the label directly
+          and using `std.contract.blame` instead of returning an error value.
+          ```
         "%
       = fun contract label value =>
         %contract/apply% contract (%label/push_diag% label) value,
+
+    check
+      : Dyn -> Dyn -> Dyn -> [|
+        'Ok Dyn,
+        'Error {
+          message | String | optional,
+          notes | Array String | optional,
+          blame_location | Dyn | optional,
+        }
+      |]
+      | doc m%"
+          Variant of `std.contract.apply` which returns `'Error {..}` upon
+          immediate failure of the contract instead of aborting the execution
+          with a blame error, or wraps the return value as `'Ok value`
+          otherwise. Delayed errors may still cause uncatchable blame errors.
+
+          `check` is intended to be used when calling another contract from a
+          custom contract, since the return type of `check` is precisely the
+          same as the return type of a custom contract, and because it preserves
+          immediate errors.
+
+          Another use-case is to check if the immediate part of a contract is
+          failing or not without aborting the execution with an uncatchable
+          error.
+
+          `check` has the same behavior as `std.contract.apply` with respect to
+          the diagnostic stack. See `std.contract.apply` for more details.
+
+          Looking at the action of `check` on a custom contract might help: if
+          `Contract` is a custom contract defined as `std.contract.custom
+          contract_impl` where `contract_impl` is a function `fun label value =>
+          ...`, then `std.contract.check Contract label value` is just the
+          normal function application `contract_impl label value` (this isn't
+          entirely true because of the diagnostic stack and how checked values
+          are tracked for error reporting, but it's mostly true). Of course,
+          `check` works on other types of contracts, such as static types or
+          record contracts.
+
+          # Examples
+
+          ```nickel
+          let Nullable = fun Contract =>
+            std.contract.custom
+              (fun label value =>
+                if value == null then
+                  'Ok value
+                else
+                  std.contract.check Contract label value
+              )
+          in
+
+          { foo = 1 } | Nullable {foo | Number}
+          ```
+        "%
+      = fun contract label value =>
+        %contract/check% contract (%label/push_diag% label) value,
+
+    any_of
+      | Array Dyn -> Dyn
+      | doc m%"
+          Builds a contract that checks if the value satisfies at least one of
+          the given contracts. More precisely, `any_of` applies each contract in
+          order and returns the result of the first one that doesn't fail
+          immediately (that is, the first one which returns the value `'Ok _`).
+
+          **Important** `any_of` is only an approximation of what you could
+          expect from an `or` operation on contracts. Because `any_of` must
+          preserve the lazyness of contracts, it means that it has to
+          pick the right branch by relying only on the immediate part of each
+          contract, and not on the delayed part.
+
+          Fortunately, `any_of` is an overstrict approximation, in that it might
+          reject more values than what you expect, but it'll never let invalid
+          values slip through.
+
+          Typically, `std.contract.any_of [{ foo | String }, { foo | Number }]`
+          will behave exactly as `{ foo | Number }`, because the immediate part
+          of the built-in record contracts can't discriminate between the two
+          possibilities. In particular, perhaps surprisingly, the value `{foo =
+          1+1}` is rejected. Please refer to the boolean combinators section of
+          the contract chapter of the manual for a more detailed
+          explanation of the limitations of `any_of` and other boolean
+          combinators, as well as how to work around them.
+
+          # Examples
+
+          ```nickel
+          let Date = std.contract.any_of [
+            String,
+            {
+              day | Number,
+              month | Number,
+              year | Number
+            }
+          ]
+          in
+
+          { day = 1, month = 1, year = 1970 } | Date
+          ```
+        "%
+      = fun contracts =>
+        %contract/custom% (fun label value =>
+          std.array.try_fold_left
+            (fun _acc Contract =>
+              let label =
+                %label/with_message%
+                  "any_of: a delayed check of the picked branch failed"
+                  label
+              in
+              std.contract.check Contract label value
+              # We want to short-circuit on contract success. Since try_fold_left
+              # short-circuits on failure, we need to flip the two.
+              |> match {
+                'Ok value => 'Error value,
+                'Error msg => 'Ok msg
+              }
+            )
+            ('Ok null)
+            contracts
+          |> match {
+            'Ok _ =>
+              'Error {
+                message = "any_of: value didn't match any of the contracts",
+              },
+            'Error value => 'Ok value,
+          }
+        ),
+
+    all_of
+      : Array Dyn -> Dyn
+      | doc m%"
+          Builds a contract that checks if the value satisfies all of the given
+          contracts. `all_of` is just an alias for `std.contract.Sequence`, to
+          maintain consistency with `std.contract.any_of` and other JSON
+          Schema-style combinators.
+
+          As opposed to other boolean combinators such as `not` or `any_of`,
+          `all_of` work as you expect most of the time, including on contracts
+          with a delayed part. The only contracts for which `all_of` is
+          overstrict are function contracts. In general, you shouldn't use
+          function contracts with contract combinators.
+          ```
+        "%
+      = std.contract.Sequence,
+
+    not
+      | Dyn -> Dyn
+      | doc m%"
+          Builds a contract that checks if the value doesn't satisfy the given
+          contract. More specifically, `not Contract` will accept `value` if the
+          application of `Contract` to `value` fails immediately, returning
+          `'Error {..}`.
+
+          **Important**: as for other boolean combinators, `not` is only an
+          overstrict approximation of what you could expect. For example,
+          `std.contract.not (Array Number)` will reject `["a"]`, because the
+          check that elements are numbers is delayed. See the boolean
+          combinators section of the contract chapter of the manual for a more
+          detailed explanation of the limitations of `not` and other boolean
+          combinators, as well as how to work around them.
+
+          # Examples
+
+          ```nickel
+          let NotNumber = std.contract.not Number in
+          "a" | NotNumber
+          # => "a"
+          ```
+        "%
+      = fun Contract =>
+        %contract/custom% (fun label value =>
+          value
+          |> std.contract.check Contract label
+          |> match {
+            'Ok _ => 'Error { message = "not: value matched the immediate part of the contract" },
+            error => 'Ok value,
+          }
+        ),
 
     unstable
       | doc m%"
@@ -1274,37 +1907,21 @@
               That is, `some_function | DependentFun Foo Bar` performs the
               same checks as
 
-              ```nickel
+              ```nickel ignore
               fun arg =>
                 let arg_checked = (arg | Foo) in
                 (some_function arg_checked | (Bar arg_checked))
               ```
             "%
-          = fun Domain Codomain label function =>
-            fun arg =>
-              let arg_with_ctr = std.contract.apply Domain label arg in
-              function arg_with_ctr
-              |> contract.apply (Codomain arg_with_ctr) label,
+          = fun Domain Codomain =>
+            %contract/custom% (fun label function =>
+              'Ok (fun arg =>
+                let arg_with_ctr = std.contract.apply Domain label arg in
 
-        PosNumber
-          | doc m%"
-              **Warning**: this is an unstable item. It might be renamed,
-              modified or deleted in any subsequent minor Nickel version.
-
-              A contract for a positive number.
-
-              This contract blames only if the value is a number but is not
-              positive: the fact that the value is a number is assumed to be
-              checked by an associated static type annotation.
-            "%
-          = fun label value =>
-            if %typeof% value == 'Number then
-              if value >= 0 then
-                value
-              else
-                %blame% (%label/append_note% "Expected a positive number, got %{%to_string% value}" label)
-            else
-              value,
+                function arg_with_ctr
+                |> std.contract.apply (Codomain arg_with_ctr) label
+              )
+            ),
 
         RangeStep
           | doc m%"
@@ -1312,15 +1929,21 @@
               modified or deleted in any subsequent minor Nickel version.
 
               A contract for a range step, which must be a positive number.
-              Mostly a wrapper around `std.contract.unstable.PosNumber` with a
-              custom error message.
 
               This contract blames only if the value is a number but is not
               positive: the fact that the value is a number is assumed to be
               checked by an associated static type annotation.
             "%
-          = fun label =>
-            PosNumber (%label/with_message% "invalid range step" label),
+          =
+            %contract/custom% (fun _label value =>
+              if %typeof% value == 'Number && value < 0 then
+                'Error {
+                  message = "invalid range step",
+                  notes = ["Expected a positive number, got %{value}"],
+                }
+              else
+                'Ok value
+            ),
 
         RangeFun
           | doc m%"
@@ -1337,34 +1960,35 @@
               example, if the first argument is a string, this contract silently
               passes.
             "%
-          =
-            # capture the `contract.label` module to avoid name collisions with
-            # local contract argument `label`
-            let label_module = label in
-            let attach_message = label_module.with_message "invalid range" in
-
-            fun Codomain =>
-              let RangeSecond = fun start label value =>
-                if %typeof% start == 'Number && %typeof% value == 'Number then
-                  if start > value then
-                    let start_as_str = %to_string% start in
-                    let end_as_str = %to_string% value in
-                    label
-                    |> attach_message
-                    |> label_module.append_note "Expected a range end greater than %{start_as_str} (range start), got %{end_as_str}"
-                    |> blame
-                  else
-                    value
+          = fun Codomain =>
+            let RangeSecond = fun start =>
+              %contract/custom% (fun _label value =>
+                if %typeof% start == 'Number
+                && %typeof% value == 'Number
+                && start > value then
+                  'Error {
+                    message = "invalid range",
+                    notes = [
+                      "Expected a range end greater than %{start} (range start), got %{value}"
+                    ]
+                  }
                 else
-                  value
-              in
+                  'Ok value
+              )
+            in
 
-              DependentFun
-                Dyn
-                (fun start => RangeSecond start -> Codomain),
+            fun label value =>
+              %contract/apply%
+                (
+                  DependentFun
+                    Dyn
+                    (fun start => RangeSecond start -> Codomain)
+                )
+                label
+                value,
 
         IndexedArrayFun
-          | [| 'Index, 'Split |] -> Dyn -> Dyn
+          | [| 'Index, 'Split |] -> Dyn
           | doc m%"
               **Warning**: this is an unstable item. It might be renamed,
               modified or deleted in any subsequent minor Nickel version.
@@ -1386,46 +2010,53 @@
             let label_module = label in
             let attach_message = label_module.with_message "invalid array indexing" in
 
-            let ArrayIndexFirst = fun label value =>
-              if %typeof% value == 'Number then
-                let label =
-                  label
-                  |> attach_message
-                  |> label_module.append_note "Expected array index to be a positive integer, got %{%to_string% value} "
-                in
-                std.contract.apply std.number.Nat label value
-              else
-                value
+            let
+              ArrayIndexFirst =
+                %contract/custom% (fun label value =>
+                  if %typeof% value == 'Number then
+                    let label =
+                      label
+                      |> attach_message
+                      |> label_module.append_note "Expected array index to be a positive integer, got %{value} "
+                    in
+                    std.contract.check std.number.Nat label value
+                  else
+                    'Ok value
+                ),
+              ArrayIndexSecond = fun type min_size =>
+                %contract/custom% (fun _label value =>
+                  if %typeof% min_size == 'Number && %typeof% value == 'Array then
+                    let max_idx =
+                      type
+                      |> match {
+                        'Index => %array/length% value - 1,
+                        'Split => %array/length% value
+                      }
+                    in
+
+                    if min_size > max_idx then
+                      let note =
+                        if %array/length% value == 0 then
+                          "Can't index into an empty array"
+                        else
+                          "Expected an array index between 0 and %{max_idx} (included), got %{min_size}"
+                      in
+
+                      'Error {
+                        message = "invalid array indexing",
+                        notes = [note],
+                      }
+                    else
+                      'Ok value
+                  else
+                    'Ok value
+                ),
             in
 
-            let ArrayIndexSecond = fun type min_size label value =>
-              if %typeof% min_size == 'Number && %typeof% value == 'Array then
-                let max_idx = type |> match { 'Index => %array/length% value - 1, 'Split => %array/length% value } in
-                if min_size > max_idx then
-                  let index_as_str = %to_string% min_size in
-                  let max_as_str = %to_string% max_idx in
-                  let note =
-                    if %array/length% value == 0 then
-                      "Can't index into an empty array"
-                    else
-                      "Expected an array index between 0 and %{max_as_str} (included), got %{index_as_str}"
-                  in
-                  label
-                  |> attach_message
-                  |> label_module.append_note note
-                  |> blame
-                else
-                  value
-              else
-                value
-            in
-            let contract = fun type label function =>
+            fun type =>
               DependentFun
                 ArrayIndexFirst
-                (fun index => ArrayIndexSecond type index -> Dyn)
-                label
-                function
-            in contract,
+                (fun index => ArrayIndexSecond type index -> Dyn),
 
         ArraySliceFun
           | doc m%"
@@ -1449,60 +2080,63 @@
             let label_module = label in
             let attach_message = label_module.with_message "invalid array slice indexing" in
 
-            let SliceIndexFirst = fun label value =>
-              if %typeof% value == 'Number then
-                let label =
-                  label
-                  |> attach_message
-                  |> label_module.append_note "Expected the array slice start index to be a positive integer, got %{%to_string% value}"
-                in
-                std.contract.apply std.number.Nat label value
-              else
-                value
+            let
+              SliceIndexFirst =
+                %contract/custom% (fun label value =>
+                  if %typeof% value == 'Number then
+                    let label =
+                      label
+                      |> attach_message
+                      |> label_module.append_note "Expected the array slice start index to be a positive integer, got %{value}"
+                    in
+                    std.contract.check std.number.Nat label value
+                  else
+                    'Ok value
+                ),
+              SliceIndexSecond = fun start =>
+                %contract/custom% (fun label value =>
+                  if %typeof% start == 'Number && %typeof% value == 'Number then
+                    if value < start then
+                      'Error {
+                        message = "invalid array slice indexing",
+                        notes = [
+                          "Expected the array slice indices to satisfy `start <= end`, but got %{start} (start) and %{value} (end)"
+                        ],
+                      }
+                    else
+                      let label =
+                        label
+                        |> attach_message
+                        |> label_module.append_note "Expected the array slice end index to be a positive integer, got %{value}"
+                      in
+                      std.contract.check std.number.Nat label value
+                  else
+                    'Ok value
+                ),
+              ArraySliceArray = fun end_index =>
+                %contract/custom% (fun _label value =>
+                  if %typeof% end_index == 'Number
+                  && %typeof% value == 'Array
+                  && end_index > %array/length% value then
+                    'Error {
+                      message = "invalid array slice indexing",
+                      notes = [
+                        "Expected the slice end index to be between 0 and %{%array/length% value} (array's length), got %{end_index}"
+                      ],
+                    }
+                  else
+                    'Ok value
+                ),
             in
 
-            let SliceIndexSecond = fun start label value =>
-              if %typeof% start == 'Number && %typeof% value == 'Number then
-                if value < start then
-                  label
-                  |> attach_message
-                  |> label_module.append_note "Expected the array slice indices to satisfy `start <= end`, but got %{%to_string% start} (start) and %{%to_string% value} (end)"
-                  |> blame
-                else
-                  let label =
-                    label
-                    |> attach_message
-                    |> label_module.append_note "Expected the array slice end index to be a positive integer, got %{%to_string% value}"
-                  in
-                  std.contract.apply std.number.Nat label value
-              else
-                value
-            in
-
-            let ArraySliceArray = fun end_index label value =>
-              if %typeof% end_index == 'Number && %typeof% value == 'Array then
-                if end_index > %array/length% value then
-                  let index_as_str = %to_string% end_index in
-                  let size_as_str = %to_string% (%array/length% value) in
-                  label
-                  |> attach_message
-                  |> label_module.append_note "Expected the slice end index to be between 0 and %{size_as_str} (array's length), got %{index_as_str}"
-                  |> blame
-                else
-                  value
-              else
-                value
-            in
             DependentFun
               SliceIndexFirst
-              (
-                fun start_index =>
-                  DependentFun
-                    (SliceIndexSecond start_index)
-                    (
-                      fun end_index =>
-                        ArraySliceArray end_index -> Dyn
-                    )
+              (fun start_index =>
+                DependentFun
+                  (SliceIndexSecond start_index)
+                  (fun end_index =>
+                    ArraySliceArray end_index -> Dyn
+                  )
               ),
 
         HasField
@@ -1526,34 +2160,32 @@
               let f | HasField Dyn = fun field record => record."%{field}" in
               (f "foo" { foo = 1, bar = 2 })
               + (f "baz" { foo = 1, bar = 2 })
+              # => error: missing field
               ```
 
               In this example, the first call to `f` won't blame, but the second
               will, as `baz` isn't a field of the record argument.
             "%%
-          =
-            # capture the `contract.label` module to avoid name collisions with
-            # local contract argument `label`
-            let label_module = label in
-            let attach_message = label_module.with_message "missing field" in
-
-            fun Codomain =>
-              let HasFieldSecond = fun field label value =>
+          = fun Codomain =>
+            let HasFieldSecond = fun field =>
+              %contract/custom% (fun _label value =>
                 if %typeof% field == 'String
                 && %typeof% value == 'Record
                 && !(%record/has_field% field value) then
-                  label
-                  |> attach_message
-                  |> label_module.append_note
-                    "The record given as an argument lacks the required field `%{field}`."
-                  |> blame
+                  'Error {
+                    message = "missing field",
+                    notes = [
+                      "The record given as an argument lacks the required field `%{field}`."
+                    ]
+                  }
                 else
-                  value
-              in
+                  'Ok value
+              )
+            in
 
-              DependentFun
-                Dyn
-                (fun field => HasFieldSecond field -> Codomain),
+            DependentFun
+              Dyn
+              (fun field => HasFieldSecond field -> Codomain),
       }
   },
 
@@ -1564,13 +2196,15 @@
 
         # Examples
 
-        ```nickel
-        ('foo | std.enum.Tag) =>
-          'foo
-        ('FooBar | std.enum.Tag) =>
-          'FooBar
-        ("tag" | std.enum.Tag) =>
-          error
+        ```nickel multiline
+        ('foo | std.enum.Tag)
+        # => 'foo
+
+        ('FooBar | std.enum.Tag)
+        # => 'FooBar
+
+        ("tag" | std.enum.Tag)
+        # => error
         ```
       "%
       = std.contract.from_predicate is_enum_tag,
@@ -1581,15 +2215,23 @@
 
         # Examples
 
-        ```nickel
-        ('Foo | std.enum.Enum) =>
-          'Foo
-        ('Bar 5 | std.enum.Enum) =>
-          'Bar 5
-        ("tag" | std.enum.Enum) =>
-          error
+        ```nickel multiline
+        ('Foo | std.enum.Enum)
+        # => 'Foo
+
+        ('Bar 5 | std.enum.Enum)
+        # => 'Bar 5
+
+        ("tag" | std.enum.Enum)
+        # => error
         "%
-      = std.contract.from_predicate std.is_enum,
+      =
+        %contract/custom% (fun _label value =>
+          if std.is_enum value then
+            'Ok value
+          else
+            'Error {}
+        ),
 
     TagOrString
       | doc m%%"
@@ -1628,22 +2270,18 @@
         serialized | Schema
         ```
       "%%
-      = fun label value =>
-        let label =
-          std.contract.label.with_message
-            "expected either a string or an enum tag"
-            label
-        in
-        %typeof% value
-        |> match {
-          'String => %enum/from_string% value,
-          'Enum =>
-            if is_enum_variant value then
-              std.contract.blame label
-            else
-              value,
-          _ => std.contract.blame label,
-        },
+      =
+        %contract/custom% (fun _label value =>
+          %typeof% value
+          |> match {
+            'String => 'Ok (%enum/from_string% value),
+            'Enum if !(is_enum_variant value) => 'Ok value,
+            _ =>
+              'Error {
+                message = "expected either a string or an enum tag"
+              },
+          }
+        ),
 
     is_enum_tag
       : Dyn -> Bool
@@ -1653,15 +2291,18 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.enum.is_enum_tag 'foo
-          => true
+        # => true
+
         std.enum.is_enum_tag 'FooBar
-          => true
+        # => true
+
         std.enum.is_enum_tag "tag"
-          => false
+        # => false
+
         std.enum.is_enum_tag ('Foo "arg")
-          => false
+        # => false
         ```
       "%
       = fun value => std.is_enum value && !(%enum/is_variant% value),
@@ -1674,15 +2315,18 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.enum.is_enum_variant ('Foo "arg")
-          => true
+        # => true
+
         std.enum.is_enum_variant ('Http {version = "1.1"})
-          => true
+        # => true
+
         std.enum.is_enum_variant 'foo
-          => false
+        # => false
+
         std.enum.is_enum_variant [1, 2, 3]
-          => false
+        # => false
         ```
       "%
       = fun value => %enum/is_variant% value,
@@ -1690,7 +2334,7 @@
     to_tag_and_arg
       | Enum -> { tag | String, arg | optional }
       | doc m%"
-        Convert an enum to record with a string tag and an optional argument. If
+        Converts an enum to record with a string tag and an optional argument. If
         the enum is an enum tag, the `arg` field is simply omitted.
 
         `std.enum.from_tag_and_arg` provides the inverse transformation,
@@ -1698,11 +2342,12 @@
 
         # Examples
 
-        ```nickel
-        std.enum.to_tag_and_arg ('Foo "arg") =>
-          { tag = "Foo", arg = "arg" }
+        ```nickel multiline
+        std.enum.to_tag_and_arg ('Foo "arg")
+        # => { tag = "Foo", arg = "arg" }
+
         std.enum.to_tag_and_arg 'http
-          => { tag = "http" }
+        # => { tag = "http" }
         ```
         "%
       = fun enum_value =>
@@ -1718,7 +2363,7 @@
     from_tag_and_arg
       | { tag | String, arg | optional } -> Enum
       | doc m%"
-        Create an enum from a string tag and an optional argument. If the `arg`
+        Creates an enum from a string tag and an optional argument. If the `arg`
         field is omitted, a bare enum tag is created.
 
         `std.enum.to_tag_and_value` provides the inverse transformation,
@@ -1726,11 +2371,12 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.enum.from_tag_and_arg { tag = "Foo", arg = "arg" }
-          => ('Foo "arg")
+        # => ('Foo "arg")
+
         std.enum.from_tag_and_arg { tag = "http" }
-          => 'http
+        # => 'http
         ```
         "%
       = fun enum_data =>
@@ -1747,17 +2393,20 @@
 
           # Examples
 
-          ```nickel
+          ```nickel multiline
           std.enum.map ((+) 1) ('Foo 42)
-            => 'Foo 43
-          std.enum.map f 'Bar
-            => 'Bar
+          # => 'Foo 43
+
+          std.enum.map (fun x => 1) 'Bar
+          # => 'Bar
           ```
         "%
       = fun f enum_value =>
         if %enum/is_variant% enum_value then
-          let tag = (%to_string% (%enum/get_tag% enum_value)) in
-          let mapped = f (%enum/get_arg% enum_value) in
+          let
+            tag = (%to_string% (%enum/get_tag% enum_value)),
+            mapped = f (%enum/get_arg% enum_value),
+          in
 
           %enum/make_variant% tag mapped
         else
@@ -1772,11 +2421,12 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.function.id null
-          => null
+        # => null
+
         (std.function.id (fun x => x + 1)) 0
-          => 1
+        # => 1
         ```
       "%
       = fun x => x,
@@ -1793,8 +2443,8 @@
         let f = std.function.compose (fun x => x + 1) (fun x => x / 2)
         in
         f 10
-          => (10 / 2) + 1
-          => 6
+        # => (10 / 2) + 1
+        # => 6
         ```
       "%
       = fun g f x => x |> f |> g,
@@ -1808,7 +2458,7 @@
 
         ```nickel
         std.function.flip (fun x y => "%{x} %{y}") "world!" "Hello,"
-          => "Hello, world!"
+        # => "Hello, world!"
         ```
       "%%
       = fun f x y => f y x,
@@ -1824,7 +2474,7 @@
         ```nickel
         let f = std.function.const 5 in
         f 7
-          => 5
+        # => 5
         ```
       "%
       = fun x y => x,
@@ -1839,7 +2489,7 @@
 
         ```nickel
         std.function.first 5 7
-          => 5
+        # => 5
         ```
       "%
       = fun x y => x,
@@ -1853,7 +2503,7 @@
 
         ```nickel
         std.function.second 5 7
-          => 7
+        # => 7
         ```
       "%
       = fun x y => y,
@@ -1865,11 +2515,12 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.function.pipe 2 [ (+) 2, (+) 3 ]
-          => 7
+        # => 7
+
         std.function.pipe 'World [ std.string.from, fun s => "Hello, %{s}!" ]
-          => "Hello, World!"
+        # => "Hello, World!"
         ```
       "%%
       = fun x fs => std.array.fold_left (|>) x fs,
@@ -1882,21 +2533,24 @@
 
         # Examples
 
-        ```nickel
-        (1.5 | Integer) =>
-          error
-        (42 | Integer) =>
-          42
+        ```nickel multiline
+        (1.5 | Integer)
+        # => error
+
+        (42 | Integer)
+        # => 42
         ```
       "%
-      = fun label value =>
-        if %typeof% value == 'Number then
-          if value % 1 == 0 then
-            value
+      =
+        %contract/custom% (fun _label value =>
+          if %typeof% value == 'Number then
+            if value % 1 == 0 then
+              'Ok value
+            else
+              'Error { message = "expected an integer" }
           else
-            %blame% (%label/with_message% "not an integer" label)
-        else
-          %blame% (%label/with_message% "not a number" label),
+            'Error { message = "expected a number" }
+        ),
 
     Nat
       | doc m%"
@@ -1904,23 +2558,27 @@
 
         # Examples
 
-        ```nickel
-        (42 | std.number.Nat) =>
-          42
-        (0 | std.number.Nat) =>
-          0
-        (-4 | std.number.Nat) =>
-          error
+        ```nickel multiline
+        (42 | std.number.Nat)
+        # => 42
+
+        (0 | std.number.Nat)
+        # => 0
+
+        (-4 | std.number.Nat)
+        # => error
         ```
       "%
-      = fun label value =>
-        if %typeof% value == 'Number then
-          if value % 1 == 0 && value >= 0 then
-            value
+      =
+        %contract/custom% (fun _label value =>
+          if %typeof% value == 'Number then
+            if value % 1 == 0 && value >= 0 then
+              'Ok value
+            else
+              'Error { message = "expected a natural" }
           else
-            %blame% (%label/with_message% "not a natural" label)
-        else
-          %blame% (%label/with_message% "not a number" label),
+            'Error { message = "expected a number" }
+        ),
 
     PosNat
       | doc m%"
@@ -1928,23 +2586,27 @@
 
         # Examples
 
-        ```nickel
-        (42 | std.number.PosNat) =>
-          42
-        (0 | std.number.PosNat) =>
-          error
-        (-4 | std.number.PosNat) =>
-          error
+        ```nickel multiline
+        (42 | std.number.PosNat)
+        # => 42
+
+        (0 | std.number.PosNat)
+        # => error
+
+        (-4 | std.number.PosNat)
+        # => error
         ```
       "%
-      = fun label value =>
-        if %typeof% value == 'Number then
-          if value % 1 == 0 && value > 0 then
-            value
+      =
+        %contract/custom% (fun _label value =>
+          if %typeof% value == 'Number then
+            if value % 1 == 0 && value > 0 then
+              'Ok value
+            else
+              'Error { message = "expected a positive integer" }
           else
-            %blame% (%label/with_message% "not positive integer" label)
-        else
-          %blame% (%label/with_message% "not a number" label),
+            'Error { message = "expected a number" }
+        ),
 
     NonZero
       | doc m%"
@@ -1952,21 +2614,24 @@
 
         # Examples
 
-        ```nickel
-        (1 | std.number.NonZero) =>
-          1
-        (0.0 | std.number.NonZero) =>
-          error
+        ```nickel multiline
+        (1 | std.number.NonZero)
+        # => 1
+
+        (0.0 | std.number.NonZero)
+        # => error
         ```
       "%
-      = fun label value =>
-        if %typeof% value == 'Number then
-          if value != 0 then
-            value
+      =
+        %contract/custom% (fun _label value =>
+          if %typeof% value == 'Number then
+            if value != 0 then
+              'Ok value
+            else
+              'Error { message = "value is zero" }
           else
-            %blame% (%label/with_message% "non-zero" label)
-        else
-          %blame% (%label/with_message% "not a number" label),
+            'Error { message = "expected a number" }
+        ),
 
     is_integer
       : Number -> Bool
@@ -1975,14 +2640,34 @@
 
         # Examples
 
-        ```nickel
-        std.number.is_integer 42 =>
-          true
-        std.number.is_integer 1.5 =>
-          false
+        ```nickel multiline
+        std.number.is_integer 42
+        # => true
+
+        std.number.is_integer 1.5
+        # => false
         ```
       "%
       = fun x => x % 1 == 0,
+
+    compare
+      : Number -> Number -> [| 'Lesser, 'Equal, 'Greater |]
+      | doc m%"
+        Compares two numbers.
+
+        # Examples
+        ```nickel
+        std.number.compare 1 2
+        # => 'Lesser
+        ```
+      "%
+      = fun x y =>
+        if x < y then
+          'Lesser
+        else if x > y then
+          'Greater
+        else
+          'Equal,
 
     min
       : Number -> Number -> Number
@@ -1992,8 +2677,8 @@
         # Examples
 
         ```nickel
-        std.number.min (-1337) 42 =>
-          -1337
+        std.number.min (-1337) 42
+        # => -1337
         ```
       "%
       = fun x y => if x <= y then x else y,
@@ -2006,8 +2691,8 @@
         # Examples
 
         ```nickel
-        std.number.max (-1337) 42 =>
-          42
+        std.number.max (-1337) 42
+        # => 42
         ```
       "%
       = fun x y => if x >= y then x else y,
@@ -2019,11 +2704,12 @@
 
         # Examples
 
-        ```nickel
-        std.number.floor 42.5 =>
-          42
-        std.number.floor (-42.5) =>
-          -43
+        ```nickel multiline
+        std.number.floor 42.5
+        # => 42
+
+        std.number.floor (-42.5)
+        # => -43
         ```
       "%
       = fun x =>
@@ -2039,11 +2725,12 @@
 
         # Examples
 
-        ```nickel
-        std.number.abs (-5) =>
-          5
-        std.number.abs 42 =>
-          42
+        ```nickel multiline
+        std.number.abs (-5)
+        # => 5
+
+        std.number.abs 42
+        # => 42
         ```
       "%
       = fun x => if x < 0 then -x else x,
@@ -2055,11 +2742,12 @@
 
         # Examples
 
-        ```nickel
-        std.number.fract 13.37 =>
-          0.37
-        std.number.fract 42 =>
-          0
+        ```nickel multiline
+        std.number.fract 13.37
+        # => 0.37
+
+        std.number.fract 42
+        # => 0
         ```
       "%
       = fun x => x % 1,
@@ -2071,11 +2759,12 @@
 
         # Examples
 
-        ```nickel
-        std.number.truncate (-13.37) =>
-          -13
-        std.number.truncate 42.5 =>
-          42
+        ```nickel multiline
+        std.number.truncate (-13.37)
+        # => -13
+
+        std.number.truncate 42.5
+        # => 42
         ```
       "%
       = fun x => x - (x % 1),
@@ -2088,8 +2777,8 @@
         # Examples
 
         ```nickel
-        std.number.pow 2 8 =>
-          256
+        std.number.pow 2 8
+        # => 256
         ```
 
         # Precision
@@ -2106,9 +2795,763 @@
         power operation, might incur rounding errors**.
       "%
       = fun x n => %pow% x n,
+
+    log
+      : Number -> Number -> Number
+      | doc m%"
+        `log x base` returns the logarithm of x with respect to the given base.
+
+        # Examples
+        ```nickel ignore
+        std.number.log 2 1024
+        # => 10
+
+        std.number.log 100 10
+        # => 2
+
+        std.number.log 10 std.number.e
+        # => 2.302585
+        ```
+      "%
+      = fun x b => %number/log% x b,
+
+    cos
+      : Number -> Number
+      | doc m%"
+        `cos x` returns the cosinus of x.
+
+        # Examples
+
+        ```nickel ignore
+        std.number.cos (std.number.pi / 4)
+        # => 0.70710678118
+        ```
+      "%
+      = fun x => %number/cos% x,
+
+    sin
+      : Number -> Number
+      | doc m%"
+        `sin x` returns the sinus of x.
+
+        # Examples
+
+        ```nickel ignore
+        std.number.sin (std.number.pi / 2)
+        # => 1
+        ```
+      "%
+      = fun x => %number/sin% x,
+
+    tan
+      : Number -> Number
+      | doc m%"
+        `tan x` returns the tangent of x.
+
+        # Examples
+
+        ```nickel ignore
+        std.number.tan (std.number.pi / 4)
+        # => 1
+        ```
+      "%
+      = fun x => %number/tan% x,
+
+    arccos
+      : Number -> Number
+      | doc m%"
+        `arccos x` returns the arccosinus of x.
+
+        # Examples
+
+        ```nickel ignore
+        std.number.arccos 0
+        # => 1.570796326794897
+
+        std.number.arccos 1
+        # => 0
+        ```
+      "%
+      = fun x => %number/arccos% x,
+
+    arcsin
+      : Number -> Number
+      | doc m%"
+        `arcsin x` returns the arccsinus of x.
+
+        # Examples
+
+        ```nickel ignore
+        std.number.arcsin 0
+        # => 0
+
+        std.number.arcsin 1
+        # => 1.570796326794897
+        ```
+      "%
+      = fun x => %number/arcsin% x,
+
+    arctan
+      : Number -> Number
+      | doc m%"
+        `arctan x` returns the arctangent of x.
+
+        # Examples
+
+        ```nickel ignore
+        std.number.arctan 1
+        # => 0.7853981633974482
+        ```
+      "%
+      = fun x => %number/arctan% x,
+
+    arctan2
+      : Number -> Number -> Number
+      | doc m%"
+        `arctan2 y x returns the four quadrant arctangent of y over x.
+
+        # Examples
+
+        ```nickel ignore
+        std.number.arctan2 1 0
+        # => 1.570796326794897
+
+        std.number.arctan2 (-0.5) (-0.5)
+        # => -2.356194490192345
+        ```
+      "%
+      = fun y x => %number/arctan2% y x,
+
+    sqrt
+      : Number -> Number
+      | doc m%"
+        `sqrt x` return the square root of x.
+
+        # Examples
+
+        ```nickel
+        std.number.sqrt 4
+        # => 2
+        ```
+      "%
+      = fun x => pow x (1 / 2),
+
+    pi
+      : Number
+      | doc m%"
+        The π mathematical constant.
+      "%
+      = 3.14159265358979323846,
+
+    e
+      : Number
+      | doc m%"
+        Euler's number, the e mathematical constant.
+      "%
+      = 2.7182818284590452354,
   },
 
+  package
+    | doc m%"
+      Contracts supporting Nickel's forthcoming package management feature.
+
+      These contracts are not yet stabilized: they aren't part of the backward
+      compatibility policy and are subject to change at any point in time.
+    "%
+    =
+      let
+        semver_re = m%"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$"%,
+        # Just the major.minor.patch part, with minor and patch being optional.
+        partial_semver_re = m%"^(0|[1-9]\d*)(?:\.(0|[1-9]\d*))?(?:\.(0|[1-9]\d*))?$"%,
+        # An exact version constraint. This one is required to have minor and patch versions, and it's allowed to have a prerelease.
+        semver_equals_req_re = m%"^=(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(\.(0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?$"%,
+        # The regex for packages ids in the global index. According to
+        # https://stackoverflow.com/questions/59081778/rules-for-special-characters-in-github-repository-name,
+        # github user and repo names can only have ASCII \w, -, or . characters
+        # (with some additional restrictions like length bounds).
+        package_re = m%"^github:([0-9A-Za-z_.-]+)/([0-9A-Za-z_.-]+)(?:/(.+))?$"%,
+      in
+      let
+        find_semver_re = string.find semver_re,
+        find_partial_semver_re = string.find partial_semver_re,
+        find_semver_equals_req_re = string.find semver_equals_req_re,
+        find_package_re = string.find package_re,
+      in
+      {
+        structured = {
+          Semver
+            | doc m%"
+              A contract for semantic version ("semver") identifiers, structured as a record.
+
+              See also `std.package.Semver`, which can produce one of these by parsing a string.
+            "%
+            = {
+              major
+                | number.Nat
+                | doc "The major version number.",
+              minor
+                | number.Nat
+                | doc "The minor version number.",
+              patch
+                | number.Nat
+                | doc "The patch version.",
+              pre
+                | String
+                | doc m%"
+                  The prerelease identifier.
+
+                  When comparing  versions for compatibility, non-empty prerelease
+                  strings only match one another if they are exactly equal. See
+                  `std.package.SemverReq` for more details
+                "%
+                | optional,
+              build
+                | String
+                | doc m%"
+                  The build metadata.
+
+                  This is completely ignored while comparing versions for compatibility.
+                "%
+                | optional,
+            },
+          ExactSemverReq
+            | doc m%"
+              A contract for exact semantic version ("semver") requirements, structured as a record.
+
+              This differs from `std.package.structured.Semver` in that it lacks a build metadata field.
+            "%
+            = {
+              major
+                | number.Nat
+                | doc "The major version number.",
+              minor
+                | number.Nat
+                | doc "The minor version number.",
+              patch
+                | number.Nat
+                | doc "The patch version.",
+              pre
+                | String
+                | doc "The prerelease identifier."
+                | optional,
+            },
+          SemverPrefix
+            | doc m%"
+              A contract for semantic version ("semver") prefixes, structured as a record.
+            "%
+            = {
+              major
+                | number.Nat
+                | doc "The major version number.",
+              minor
+                | number.Nat
+                | doc "The minor version number."
+                | optional,
+              patch
+                | number.Nat
+                | doc "The patch version."
+                | optional,
+            },
+          SemverReq = [| 'Compatible SemverPrefix, 'Exact ExactSemverReq |],
+          PackageId
+            | doc m%"
+              Identifies a package in the global package index.
+            "%
+            = [| 'Github { org | String, name | String, path | String | optional } |],
+        },
+        Semver
+          | doc m%"
+            A contract for semantic version ("semver") identifiers.
+
+            This is a normalizing contract, which accepts either a string to be parsed
+            or a record. If a string is provided, it will be parsed into a record (in
+            the `std.package.structured.Semver` format).
+
+            # Examples
+
+            ```nickel multiline
+            "1.2.0-pre1" | std.package.Semver
+            # => { major = 1, minor = 2, patch = 0, pre = "pre1", }
+
+            { major = 1, minor = 2, patch = 0 } | std.package.Semver
+            # => { major = 1, minor = 2, patch = 0, }
+
+            { major = 1, minor = 2 } | std.package.Semver
+            # => error: missing definition
+
+            "1.foo" | std.package.Semver
+            # => error: contract broken by a value
+            ```
+          "%
+          =
+            %contract/custom% (fun label value =>
+              %typeof% value
+              |> match {
+                'Record => std.contract.check structured.Semver label value,
+                'String =>
+                  let matches = find_semver_re value in
+                  if matches.index == -1 then
+                    'Error { message = "invalid semver" }
+                  else
+                    let gs = matches.groups in
+                    let
+                      pre_ = gs |> array.at 3,
+                      build_ = gs |> array.at 4,
+                    in
+                    let val =
+                      {
+                        major = gs |> array.at 0 |> string.to_number,
+                        minor = gs |> array.at 1 |> string.to_number,
+                        patch = gs |> array.at 2 |> string.to_number,
+                      }
+                      & (if pre_ != "" then { pre = pre_ } else {})
+                      & (if build_ != "" then { build = build_ } else {})
+                    in
+                    std.contract.check structured.Semver label val,
+                _ => 'Error { message = "expected a string or a record" }
+              }
+            ),
+        SemverPrefix
+          | doc m%"
+            A contract for semantic version ("semver") prefixes.
+
+            This prefix must contain a major version number. It may contain a minor
+            version and a patch version, but it must not contain a prerelease version
+            or build metadata.
+
+            This is a normalizing contract, which accepts either a string to be parsed
+            or a record. If a string is provided, it will be parsed into a record (in
+            the `std.package.structured.SemverPrefix` format).
+
+            # Examples
+
+            ```nickel multiline
+            "1.2" | std.package.SemverPrefix
+            # => { major = 1, minor = 2 }
+
+            { major = 1, minor = 2 } | std.package.SemverPrefix
+            # => { major = 1, minor = 2 }
+
+            "1.foo" | std.package.SemverPrefix
+            # => error: contract broken by a value
+            ```
+          "%
+          =
+            %contract/custom% (fun label value =>
+              %typeof% value
+              |> match {
+                'Record => std.contract.check structured.SemverPrefix label value,
+                'String =>
+                  let matches = find_partial_semver_re value in
+                  if matches.index == -1 then
+                    'Error { message = "invalid semver" }
+                  else
+                    let gs = matches.groups in
+                    let
+                      minor_ = gs |> array.at 1,
+                      patch_ = gs |> array.at 2,
+                    in
+                    let val =
+                      { major = gs |> array.at 0 |> string.to_number }
+                      & (if minor_ == "" then {} else { minor = string.to_number minor_ })
+                      & (if patch_ == "" then {} else { patch = string.to_number patch_ })
+                    in
+                    std.contract.check structured.SemverPrefix label val,
+                _ => 'Error { message = "expected a string or a record" }
+              }
+            ),
+        ExactSemverReq
+          | doc m%"
+            A contract for exact semantic version ("semver") requirements, structured as a record.
+
+            An exact semver requirement looks like "=1.2.3" or "=1.2.3-rc1": it starts with an
+            equals sign, must contain major, minor, and patch versions, and may contain a
+            prerelease specifier.
+
+            This is a normalizing contract, which accepts either a string to be parsed
+            or a record. If a string is provided, it will be parsed into a record (in
+            the `std.package.structured.ExactSemverReq` format).
+          "%
+          =
+            %contract/custom% (fun label value =>
+              %typeof% value
+              |> match {
+                'Record => std.contract.check structured.ExactSemverPrefix label value,
+                'String =>
+                  let matches = find_semver_equals_req_re value in
+                  if matches.index == -1 then
+                    'Error { message = "invalid semver" }
+                  else
+                    let gs = matches.groups in
+                    let pre_ = array.at 3 gs in
+                    let val =
+                      {
+                        major = gs |> array.at 0 |> string.to_number,
+                        minor = gs |> array.at 1 |> string.to_number,
+                        patch = gs |> array.at 2 |> string.to_number,
+                      }
+                      & (if pre_ == "" then {} else { pre = pre_ })
+                    in
+                    std.contract.check structured.ExactSemverReq label val,
+                _ => 'Error { message = "expected a string or a record" }
+              }
+            ),
+        SemverReq
+          | doc m%"
+            A contract for semantic version ("semver") requirements.
+
+            This is a normalizing contract, which accepts either a string to be parsed
+            or a record. If a string is provided, it will be parsed into a record (in
+            the `std.package.structured.SemverReq` format).
+
+            Nickel supports two kinds of requirements: semver-compatible
+            requirements and exact version requirements. Semver-compatible
+            requirements take the form "major.minor.patch", where minor and patch
+            are optional. Their semantics are:
+
+            - "1.2.3" will match all versions having major version 1, minor version 2,
+              and patch version at least 3.
+            - "1.2" will match all versions having major version 1 and minor version
+              at least 2.
+            - "1" will match all versions having major version 1.
+            - a semver-compatible requirement will never match a prerelease version.
+
+            Exact version requirements take the form "=major.minor.patch-pre", where
+            the prerelease tag is optional, but major, minor, and patch are all required.
+
+            # Examples
+
+            ```nickel multiline
+            "1.2" | SemverReq
+            # => 'Compatible { major = 1, minor = 2 }
+
+            "=1.2" | SemverReq
+            # => error: contract broken by a value
+
+            "1.2.0" | SemverReq
+            # => 'Compatible { major = 1, minor = 2, patch = 0 }
+
+            "=1.2.0" | SemverReq
+            # => 'Exact { major = 1, minor = 2, patch = 0, }
+
+            "1.2.0-pre1" | SemverReq
+            # => error: contract broken by a value
+
+            "=1.2.0-pre1" | SemverReq
+            # => 'Exact { major = 1, minor = 2, patch = 0, pre = "pre1", }
+            ```
+          "%
+          =
+            %contract/custom% (fun label value =>
+              %typeof% value
+              |> match {
+                'Record => std.contract.check structured.SemverReq label value,
+                'String =>
+                  if string.is_match semver_equals_req_re value then
+                    std.contract.check ExactSemverReq label value
+                    |> match {
+                      'Ok v => 'Ok ('Exact v),
+                      'Error e => 'Error e,
+                    }
+                  else
+                    std.contract.check SemverPrefix label value
+                    |> match {
+                      'Ok v => 'Ok ('Compatible v),
+                      'Error e => 'Error e,
+                    },
+                _ => 'Error { message = "expected a string or a record" }
+              }
+            ),
+
+        GitId
+          | doc m%"
+            A full git commit id. That is, a 160-bit SHA-1 hash as a lower-case hexadecimal string.
+
+            # Examples
+
+            ```nickel multiline
+            "0c0a82aa4a05cd84ba089bdba2e6a1048058f41b" | GitId
+            # =>  "0c0a82aa4a05cd84ba089bdba2e6a1048058f41b"
+            ```
+          "%
+          =
+            let hex_chars = std.string.is_match "^[a-f0-9]*$" in
+            let value_validator =
+              std.contract.from_validator (fun s =>
+                if (std.string.length s) != 40 then
+                  'Error {
+                    message = "expected 40 characters, got %{std.string.length s}",
+                    notes = ["use the full commit id; short ids are not supported"]
+                  }
+                else if !(hex_chars s) then
+                  'Error { message = "contains an invalid character", notes = ["only 0-9 and a-f are allowed"] }
+                else
+                  'Ok
+              )
+            in std.contract.Sequence [ String, value_validator],
+
+        PackageId
+          | doc m%"
+            A contract for ids of packages in the global package index.
+
+            This is a normalizing contract, which accepts either a string to be parsed
+            or a record. If a string is provided, it will be parsed into a record (in
+            the `std.package.structured.PackageId` format).
+
+            Valid strings are of the format `github:<owner>/<repo>` or
+            `github:<owner>/<repo>/<path>`, where `<owner>` and `<repo>` are
+            strings made up of characters that are valid in GitHub usernames
+            (i.e., alphanumeric, `_`, `-`, or `.`).
+
+            # Examples
+
+            ```nickel multiline
+            "github:nickel-lang/json-schema-lib" | std.package.PackageId
+            # => 'Github { org = "nickel-lang", name = "json-schema-lib" }
+
+            "github:nickel-lang/json-schema-to-nickel/lib" | std.package.PackageId
+            # => 'Github { org = "nickel-lang", name = "json-schema-to-nickel", path="lib" }
+
+            "github:not-enough-slashes" | std.package.PackageId
+            # => error
+
+            "codeberg:not-yet/supported" | std.package.PackageId
+            # => error
+            ```
+            "%
+          =
+            %contract/custom% (fun label value =>
+              %typeof% value
+              |> match {
+                'Record => std.contract.check structured.PackageId label value,
+                'String =>
+                  let matches = find_package_re value in
+                  if matches.index == -1 then
+                    'Error { message = "package id failed to match the pattern `github:<org>/<repo>`" }
+                  else
+                    let gs = matches.groups in
+                    let val =
+                      if (array.at 2 gs |> string.length) == 0 then
+                        'Github { org = array.at 0 gs, name = array.at 1 gs }
+                      else
+                        'Github { org = array.at 0 gs, name = array.at 1 gs, path = array.at 2 gs }
+                    in
+                    std.contract.check structured.PackageId label val,
+                _ => 'Error { message = "expected a string or a record" }
+              }
+            ),
+
+        GitDependency
+          | doc m%"
+            A contract identifying a dependency that can be fetched from a git repository.
+          "%
+          = {
+            url
+              | String
+              | doc m%"
+                The url of a git repository.
+
+                This supports local file paths, https urls like `https://example.com/example-repo`,
+                and ssh urls like `user@example.com:repo`.
+              "%,
+            ref
+              | [| 'Head, 'Branch String, 'Tag String, 'Commit std.package.GitId |]
+              | optional
+              | doc m%"
+                The git ref to fetch from the repository.
+
+                If not provided, defaults to 'Head.
+              "%,
+            path
+              | String
+              | optional
+              | doc m%"
+                The path of the nickel package within the git repository. If omitted, the nickel package
+                is at the root of the git repository.
+              "%,
+          },
+
+        IndexDependency
+          | doc m%"
+            A contract identifying a dependency that can be fetched from a package index.
+          "%
+          = {
+            package
+              | PackageId
+              | doc m%"
+                The dependency's identifier within the package index, in the format "github:<organization>/<repository>".
+              "%,
+            version
+              | SemverReq
+              | doc m%"
+                The required version of the package.
+
+                Nickel supports two kinds of requirements: semver-compatible
+                requirements and exact version requirements. Semver-compatible
+                requirements take the form "major.minor.patch", where minor and patch
+                are optional. Their semantics are:
+
+                - "1.2.3" will match all versions having major version 1, minor version 2,
+                  and patch version at least 3.
+                - "1.2" will match all versions having major version 1 and minor version
+                  at least 2.
+                - "1" will match all versions having major version 1.
+                - a semver-compatible requirement will never match a prerelease version.
+
+                Exact version requirements take the form "=major.minor.patch-pre", where
+                the prerelease tag is optional, but major, minor, and patch are all required.
+              "%,
+          },
+
+        Manifest
+          | doc m%"
+            A contract for a Nickel package manifest.
+
+            # Example
+
+            ```nickel
+            {
+              name = "my-package",
+              version = "1.0.0",
+              minimal_nickel_version = "1.10",
+              authors = ["Me <me@example.com>"],
+              description = "My great package",
+
+              dependencies = {
+                my_local_dep = 'Path "../somewhere",
+                git_dep = 'Git { url = "https://example.com/repo", ref = 'Tag "v1.0" },
+                index_dep = 'Index { package = "github:nickel-lang/example", version = "1.0" },
+              },
+            } | std.package.Manifest
+            ```
+          "%
+          = {
+            name
+              | String
+              | doc m%"
+                The name of this package.
+              "%,
+
+            version
+              | String
+              | Semver
+              | doc m%"
+                The version of this package.
+
+                Any semantic version is accepted, but the build metadata field has no effect when matching versions.
+              "%,
+
+            minimal_nickel_version
+              | String
+              | SemverPrefix
+              | doc m%"
+                The minimal nickel version required for this package.
+              "%,
+
+            authors
+              | Array String
+              | doc m%"
+                The authors of this package.
+              "%,
+
+            description
+              | String
+              | optional
+              | doc m%"
+                A description of this package.
+              "%,
+
+            keywords
+              | Array String
+              | optional
+              | doc m%"
+                A list of keywords to help people find this package.
+              "%,
+
+            license
+              | String
+              | optional
+              | doc m%"
+                The name of the license that this package is available under.
+
+                This is a completely free-form string, but some tooling may impose
+                restrictions. For example, if you want to publish your package in
+                Nickel's global package registry, the license field needs to be a
+                valid SPDX license expression that allows redistribution.
+              "%,
+
+            dependencies
+              | {
+                _ : [|
+                  'Path String,
+                  'Git std.package.GitDependency,
+                  'Index std.package.IndexDependency,
+                |]
+              }
+              | std.record.FieldsMatch "^_*[a-zA-Z][_a-zA-Z0-9-']*$"
+              | doc m%"
+                A dictionary of package dependencies, keyed by the name that this package uses to refer to them locally.
+
+                The names must be valid Nickel identifiers.
+              "%
+              | default
+              = {},
+          },
+      },
+
   record = {
+    FieldsMatch
+      | String -> Dyn
+      | doc m%"
+        A contract asserting that all field names in a record match a regular expression
+
+        # Examples
+
+        ```nickel multiline
+        {
+          foo_field = 1,
+          bar_field = 2,
+        } | std.record.FieldsMatch "_field$"
+        # => { foo_field = 1, bar_field = 2 }
+
+        {
+          foo_field = 1,
+          bar = 2,
+        } | std.record.FieldsMatch "_field$"
+        # => error
+        ```
+        "%
+      = fun pattern =>
+        let good_name = %string/is_match% pattern in
+        %contract/custom% (fun label value =>
+          if %typeof% value != 'Record then
+            'Error { message = "expected a record" }
+          else
+            let bad_names =
+              %record/fields% value
+              |> std.array.fold_left
+                (fun acc name =>
+                  if good_name name then
+                    acc
+                  else
+                    acc @ ["\"" ++ name ++ "\""]
+                )
+                []
+            in
+            %array/length% bad_names
+            |> match {
+              0 => 'Ok value,
+              1 =>
+                'Error {
+                  message = "invalid field name %{std.array.at 0 bad_names}",
+                },
+              _ =>
+                'Error {
+                  message = "invalid field names %{std.string.join "," bad_names}",
+                },
+            }
+        ),
+
     map
       : forall a b. (String -> a -> b) -> { _ : a } -> { _ : b }
       | doc m%"
@@ -2117,11 +3560,12 @@
 
         # Examples
 
-        ```nickel
-        std.record.map (fun s x => s) { hi = 2 } =>
-          { hi = "hi" }
-        std.record.map (fun s x => x + 1) { hello = 1, world = 2 } =>
-          { hello = 2, world = 3 }
+        ```nickel multiline
+        std.record.map (fun s x => s) { hi = 2 }
+        # => { hi = "hi" }
+
+        std.record.map (fun s x => x + 1) { hello = 1, world = 2 }
+        # => { hello = 2, world = 3 }
         ```
       "%
       = fun f r => %record/map% r f,
@@ -2141,11 +3585,12 @@
 
         # Examples
 
-        ```nickel
-        std.record.fields { one = 1, two = 2 } =>
-          [ "one", "two" ]
-        std.record.fields { one = 1, two = 2, three_opt | optional } =>
-          [ "one", "two" ]
+        ```nickel multiline
+        std.record.fields { one = 1, two = 2 }
+        # => [ "one", "two" ]
+
+        std.record.fields { one = 1, two = 2, three_opt | optional }
+        # => [ "one", "two" ]
         ```
       "%
       = fun r => %record/fields% r,
@@ -2159,11 +3604,12 @@
 
         # Examples
 
-        ```nickel
-        std.record.fields_with_opts { one = 1, two = 2 } =>
-          [ "one", "two" ]
-        std.record.fields_with_opts { one = 1, two = 2, three_opt | optional } =>
-          [ "one", "two", "three_opt" ]
+        ```nickel multiline
+        std.record.fields_with_opts { one = 1, two = 2 }
+        # => [ "one", "two" ]
+
+        std.record.fields_with_opts { one = 1, two = 2, three_opt | optional }
+        # => [ "one", "three_opt", "two" ]
         ```
       "%
       = fun r => %record/fields_with_opts% r,
@@ -2176,8 +3622,8 @@
         # Examples
 
         ```nickel
-        std.record.values { one = 1, world = "world" } =>
-          [ 1, "world" ]
+        std.record.values { one = 1, world = "world" }
+        # => [ 1, "world" ]
         ```
       "%
       = fun r => %record/values% r,
@@ -2196,16 +3642,19 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.record.has_field "hello" { one = 1, two = 2 }
-          => false
+        # => false
+
         std.record.has_field "one" { one = 1, two = 2 }
-          => true
+        # => true
+
         std.record.has_field "two_opt" { one, two_opt | optional }
-          => false
+        # => false
+
         ({ one = 1 } | {one, two_opt | optional })
         |> std.record.has_field "two_opt"
-          => false
+        # => false
         ```
       "%
       = fun field r => %record/has_field% field r,
@@ -2220,16 +3669,19 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.record.has_field_with_opts "hello" { one = 1, two = 2 }
-          => false
+        # => false
+
         std.record.has_field_with_opts "one" { one = 1, two = 2 }
-          => true
+        # => true
+
         std.record.has_field_with_opts "two_opt" { one, two_opt | optional }
-          => true
+        # => true
+
         ({ one = 1 } | {one, two_opt | optional })
         |> std.record.has_field_with_opts "two_opt"
-          => true
+        # => true
       "%
       = fun field r => %record/has_field_with_opts% field r,
 
@@ -2251,15 +3703,16 @@
 
         # Examples
 
-        ```nickel
-        std.record.get "one" { one = 1, two = 2 } =>
-          1
+        ```nickel multiline
+        std.record.get "one" { one = 1, two = 2 }
+        # => 1
+
         { one = 1, two = 2, string = "three"}
         |> std.record.to_array
         |> std.array.filter (fun { field, value } => std.is_number value)
         |> std.record.from_array
         |> std.record.get "two"
-          => 2
+        # => 2
         ```
       "%%
       = fun field r => r."%{field}",
@@ -2273,13 +3726,15 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.record.get_or "tree" 3 { one = 1, two = 2 }
-          => 3
+        # => 3
+
         std.record.get_or "one" 11 { one = 1, two = 2 }
-          => 1
+        # => 1
+
         std.record.get_or "value" "default" { tag = 'Hello, value }
-          => "default"
+        # => "default"
         ```
       "%%
       = fun field default_value record =>
@@ -2312,20 +3767,23 @@
 
           # Examples
 
-          ```nickel
+          ```nickel multiline
           std.record.insert "foo" 5 { bar = "bar" }
-            => { foo = 5, bar = "bar }
+          # => { foo = 5, bar = "bar" }
+
           {}
           |> std.record.insert "file.txt" "data/text"
           |> std.record.insert "length" (10*1000)
-            => {"file.txt" = "data/text", "length" = 10000}
+          # => {"file.txt" = "data/text", "length" = 10000}
+
           std.record.insert "already_there_opt" 0 {already_there_opt | optional}
-            => {already_there_optional = 0}
+          # => {already_there_opt = 0}
+
           std.record.insert "already_there" 0 {already_there = 1}
-            => error
+          # => error
           ```
         "%%
-      = fun field content r => %record/insert% field r content,
+      = fun field content r => %record/insert% field (%record/freeze% r) content,
 
     insert_with_opts
       : forall a. String -> a -> { _ : a } -> { _ : a }
@@ -2343,20 +3801,23 @@
 
           # Examples
 
-          ```nickel
+          ```nickel multiline
           std.record.insert_with_opts "foo" 5 { bar = "bar" }
-            => { foo = 5, bar = "bar }
+          # => { foo = 5, bar = "bar" }
+
           {}
           |> std.record.insert_with_opts "file.txt" "data/text"
           |> std.record.insert_with_opts "length" (10*1000)
-            => {"file.txt" = "data/text", "length" = 10000}
+          # => {"file.txt" = "data/text", "length" = 10000}
+
           std.record.insert_with_opts "already_there_optional" 0 {already_there | optional}
-            => error
+          # => { already_there_optional = 0 }
+
           std.record.insert_with_opts "already_there" 0 {already_there = 1}
-            => error
+          # => error
           ```
         "%%
-      = fun field content r => %record/insert_with_opts% field r content,
+      = fun field content r => %record/insert_with_opts% field (%record/freeze% r) content,
 
     remove
       : forall a. String -> { _ : a } -> { _ : a }
@@ -2380,16 +3841,18 @@
 
           # Examples
 
-          ```nickel
+          ```nickel multiline
           std.record.remove "foo" { foo = "foo", bar = "bar" }
-            => { bar = "bar" }
+          # => { bar = "bar" }
+
           std.record.remove "foo_opt" {foo_opt | optional}
-            => error
+          # => error
+
           std.record.remove "foo" { bar = "bar" }
-            => error
+          # => error
           ```
         "%
-      = fun field r => %record/remove% field r,
+      = fun field r => %record/remove% field (%record/freeze% r),
 
     remove_with_opts
       : forall a. String -> { _ : a } -> { _ : a }
@@ -2406,16 +3869,18 @@
 
           # Examples
 
-          ```nickel
+          ```nickel multiline
           std.record.remove_with_opts "foo" { foo = "foo", bar = "bar" }
-            => { bar = "bar" }
+          # => { bar = "bar" }
+
           std.record.remove_with_opts "foo_opt" {foo_opt | optional}
-            => {}
+          # => {}
+
           std.record.remove_with_opts "foo" { bar = "bar" }
-            => error
+          # => error
           ```
         "%
-      = fun field r => %record/remove_with_opts% field r,
+      = fun field r => %record/remove_with_opts% field (%record/freeze% r),
 
     update
       : forall a. String -> a -> { _ : a } -> { _ : a }
@@ -2432,13 +3897,15 @@
 
           # Examples
 
-          ```nickel
-          std.record.update "foo" 5 { foo = "foo", bar = "bar" } =>
-            { foo = 5, bar = "bar" }
-          std.record.update "foo" 5 { bar = "bar" } =>
-            { foo = 5, bar = "bar" }
-          std.record.update "foo_opt" 5 {foo_opt | optional} =>
-            {foo_opt = 5}
+          ```nickel multiline
+          std.record.update "foo" 5 { foo = "foo", bar = "bar" }
+          # => { foo = 5, bar = "bar" }
+
+          std.record.update "foo" 5 { bar = "bar" }
+          # => { foo = 5, bar = "bar" }
+
+          std.record.update "foo_opt" 5 {foo_opt | optional}
+          # => {foo_opt = 5}
           ```
 
           # Overriding
@@ -2447,14 +3914,16 @@
           will only change the specified field and won't automatically update the other
           fields which depend on it:
 
-          ```nickel
-          { foo = bar + 1, bar | default = 0 } & { bar = 1 } =>
-            { foo = 2, bar = 1 }
-          std.record.update "bar" 1 {foo = bar + 1, bar | default = 0 } =>
-            { foo = 1, bar = 1 }
+          ```nickel multiline
+          { foo = bar + 1, bar | default = 0 } & { bar = 1 }
+          # => { foo = 2, bar = 1 }
+
+          std.record.update "bar" 1 {foo = bar + 1, bar | default = 0 }
+          # => { foo = 1, bar = 1 }
           ```
         "%
       = fun field content r =>
+        let r = %record/freeze% r in
         let r =
           if %record/has_field% field r then
             %record/remove% field r
@@ -2471,11 +3940,12 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.record.map_values (fun x => x + 1) { hi = 2 }
-          => { hi = 3 }
+        # => { hi = 3 }
+
         std.record.map_values (fun x => x + 1) { hello = 1, world = 2 }
-          => { hello = 2, world = 3 }
+        # => { hello = 2, world = 3 }
         ```
       "%
       = fun f => map (fun _field => f),
@@ -2489,10 +3959,7 @@
 
         ```nickel
         std.record.to_array { hello = "world", foo = "bar" }
-          => [
-            { field = "hello", value = "world" },
-            { field = "foo", value = "bar" },
-          ]
+        # => [ { field = "foo", value = "bar" }, { field = "hello", value = "world" } ]
         ```
       "%
       = fun record =>
@@ -2513,7 +3980,7 @@
           { field = "hello", value = "world" },
           { field = "foo", value = "bar" }
         ]
-          => { hello = "world", foo = "bar" }
+        # => { hello = "world", foo = "bar" }
         ```
       "%
       = fun bindings =>
@@ -2527,11 +3994,12 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.record.is_empty {}
-          => true
+        # => true
+
         std.record.is_empty { foo = 1 }
-          => false
+        # => false
         ```
       "%
       = (==) {},
@@ -2545,7 +4013,7 @@
 
         ```nickel
         std.record.merge_all [ { foo = 1 }, { bar = 2 } ]
-          => { foo = 1, bar = 2 }
+        # => { foo = 1, bar = 2 }
         ```
       "%
       = fun rs => (std.array.fold_left (&) {} (rs | Array Dyn)) | { _ : Dyn },
@@ -2561,7 +4029,7 @@
 
         ```nickel
         std.record.filter (fun _name x => x % 2 == 0) { even = 2, odd = 3 }
-          => { even = 2 }
+        # => { even = 2 }
         ```
       "%
       = fun f record =>
@@ -2569,6 +4037,24 @@
         |> to_array
         |> std.array.filter (fun { field, value } => f field value)
         |> from_array,
+
+    apply_on
+      : forall a b. String -> (a -> a -> b) -> { _ : a } -> { _ : a } -> b
+      | doc m%"
+        `apply_on field f a b` is equivalent to `f a."${field}" b."${field}"`
+        Useful for comparisons.
+
+        # Examples
+
+        ```nickel multiline
+        std.record.apply_on "name" std.string.compare { name = "Alice", age = 27 } { name = "Bob", age = 23 }
+        # => 'Lesser
+
+        std.record.apply_on "age" std.number.compare { name = "Alice", age = 27 } { name = "Bob", age = 23 }
+        # => 'Greater
+        ```
+        "%
+      = fun field f a b => f a."%{field}" b."%{field}",
 
     length
       : forall a. { _ : a } -> Number
@@ -2583,6 +4069,44 @@
         record
         |> fields
         |> std.array.length,
+
+    freeze
+      : forall a. { _ : a } -> { _ : a }
+      | doc m%"
+        Freezes a recursive record:
+
+        - The values of recursive fields are frozen at the current values, and
+          the dependencies are forgotten. **This means that subsequent overrides
+          through merging will only affect the overriden fields, but will no
+          longer update reverse dependencies**.
+        - All lazy pending contracts accumulated through merging and annotations
+          will be applied and flushed. **This means that the contracts of this
+          record won't propagate through future merges anymore after freezing**.
+
+        Note that the documentation and the priority of the fields aren't
+        affected.
+
+        `freeze` is used internally in the stdlib when applying dictionary
+        operations, such as `std.record.insert` or `std.record.remove`. Indeed,
+        interleaving dictionary operations and recursive records can lean to
+        surprising and unintuitive results. The Nickel stdlib tries to avoid
+        using records in both recursive and dictionary modes at the same time.
+
+        Freezing is idempotent: freezing an already frozen record has no effect.
+
+        # Examples
+
+        ```nickel multiline
+        let frozen = std.record.freeze { x = "old", y = x } in
+        frozen & { x | force = "new" }
+        # => { x = "new", y = "old" }
+
+        let frozen = std.record.freeze { x | Number = 1 } in
+        frozen & { x | force = "bypass number contract" }
+        # => { x = "bypass number contract" }
+        ```
+      "%
+      = fun record => %record/freeze% record,
   },
 
   string = {
@@ -2593,13 +4117,15 @@
 
         # Examples
 
-        ```nickel
-        ("true" | std.string.BoolLiteral) =>
-          "true"
-        ("hello" | std.string.BoolLiteral) =>
-          error
-        (true | std.string.BoolLiteral) =>
-          error
+        ```nickel multiline
+        ("true" | std.string.BoolLiteral)
+        # => "true"
+
+        ("hello" | std.string.BoolLiteral)
+        # => error
+
+        (true | std.string.BoolLiteral)
+        # => error
         ```
       "%
       = fun l s =>
@@ -2619,26 +4145,30 @@
 
         # Examples
 
-        ```nickel
-        ("+1.2" | std.string.NumberLiteral) =>
-          "+1.2"
-        ("5" | std.string.NumberLiteral) =>
-          "5"
-        (42 | std.string.NumberLiteral) =>
-          error
+        ```nickel multiline
+        ("+1.2" | std.string.NumberLiteral)
+        # => "+1.2"
+
+        ("5" | std.string.NumberLiteral)
+        # => "5"
+
+        (42 | std.string.NumberLiteral)
+        # => error
         ```
       "%
       =
         let pattern = m%"^[+-]?(\d+(\.\d*)?(e[+-]?\d+)?|\.\d+(e[+-]?\d+)?)$"% in
         let is_num_literal = %string/is_match% pattern in
-        fun l s =>
-          if %typeof% s == 'String then
-            if is_num_literal s then
-              s
+
+        %contract/custom% (fun _label value =>
+          if %typeof% value == 'String then
+            if is_num_literal value then
+              'Ok value
             else
-              %blame% (%label/with_message% "invalid number literal" l)
+              'Error { message = "invalid number literal" }
           else
-            %blame% (%label/with_message% "not a string" l),
+            'Error { message = "expected a string" }
+        ),
 
     Character
       | doc m%"
@@ -2646,25 +4176,56 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         ("e" | std.string.Character)
-          => "e"
+        # => "e"
+
         ("#" | std.string.Character)
-          => "#"
+        # => "#"
+
         ("" | std.string.Character)
-          => error
+        # => error
+
         (1 | std.string.Character)
-          => error
+        # => error
         ```
       "%
-      = fun l s =>
-        if %typeof% s == 'String then
-          if length s == 1 then
-            s
+      =
+        %contract/custom% (fun _label value =>
+          if %typeof% value == 'String then
+            if length value == 1 then
+              'Ok value
+            else
+              'Error { message = "length different than one" }
           else
-            %blame% (%label/with_message% "length different than one" l)
-        else
-          %blame% (%label/with_message% "not a string" l),
+            'Error { message = "expected a string" }
+        ),
+
+    Matches
+      | String -> Dyn
+      | doc m%"
+        Enforces that the value is a string matching the supplied regular expression.
+
+        # Examples
+
+        ```nickel multiline
+        "hello" | std.string.Matches "^[a-z]+$"
+        # => "hello"
+
+        "42" | std.string.Matches "^[a-z]+$"
+        # => error
+        ```
+      "%
+      = fun regex =>
+        let is_match = std.string.is_match regex in
+        %contract/custom% (fun _label value =>
+          if std.typeof value != 'String then
+            'Error { message = "expected a string" }
+          else if is_match value then
+            'Ok value
+          else
+            'Error { message = "expected a string matching `%{regex}`" }
+        ),
 
     Stringable
       | doc m%"
@@ -2681,30 +4242,35 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         ('Foo | std.string.Stringable)
-          => 'Foo
+        # => 'Foo
+
         (false | std.string.Stringable)
-          => false
+        # => false
+
         ("bar" ++ "foo" | std.string.Stringable)
-          => "barfoo"
+        # => "barfoo"
+
         ({foo = "baz"} | std.string.Stringable)
-          => error
+        # => error
         ```
       "%
       =
-        std.contract.from_predicate
-          (
-            fun value =>
-              let type = std.typeof value in
-              value == null
-              || type == 'Number
-              || type == 'Bool
-              || type == 'String
-              # note that `type == 'Enum` isn't sufficient, as it includes enum
-              # variants
-              || std.enum.is_enum_tag value
-          ),
+        %contract/custom% (fun _label value =>
+          let type = std.typeof value in
+
+          if value == null
+          || type == 'Number
+          || type == 'Bool
+          || type == 'String
+          # note that `type == 'Enum` isn't sufficient, as it includes enum
+          # variants
+          || std.enum.is_enum_tag value then
+            'Ok value
+          else
+            'Error {}
+        ),
 
     NonEmpty
       | doc m%"
@@ -2712,23 +4278,27 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         ("" | std.string.NonEmpty)
-          => error
+        # => error
+
         ("hi!" | std.string.NonEmpty)
-          => "hi!"
+        # => "hi!"
+
         (42 | std.string.NonEmpty)
-          => error
+        # => error
         ```
       "%
-      = fun l s =>
-        if %typeof% s == 'String then
-          if %string/length% s > 0 then
-            s
+      =
+        %contract/custom% (fun _label value =>
+          if %typeof% value == 'String then
+            if %string/length% value > 0 then
+              'Ok value
+            else
+              'Error { message = "empty string" }
           else
-            %blame% (%label/with_message% "empty string" l)
-        else
-          %blame% (%label/with_message% "not a string" l),
+            'Error { message = "not a string" }
+        ),
 
     join
       : String -> Array String -> String
@@ -2737,13 +4307,15 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.string.join ", " [ "Hello", "World!" ]
-          => "Hello, World!"
+        # => "Hello, World!"
+
         std.string.join ";" ["I'm alone"]
-          => "I'm alone"
+        # => "I'm alone"
+
         std.string.join ", " []
-          => ""
+        # => ""
         ```
       "%
       = fun sep fragments =>
@@ -2751,10 +4323,11 @@
         if length == 0 then
           ""
         else
-          let first = %array/at% fragments 0 in
-          let rest =
-            %array/slice% 1 length fragments
-            |> std.array.fold_left (fun acc s => acc ++ sep ++ s) ""
+          let
+            first = %array/at% fragments 0,
+            rest =
+              %array/slice% 1 length fragments
+              |> std.array.fold_left (fun acc s => acc ++ sep ++ s) "",
           in
           first ++ rest,
 
@@ -2768,11 +4341,12 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.string.split "," "1,2,3"
-          => [ "1", "2", "3" ]
+        # => [ "1", "2", "3" ]
+
         std.string.split "." "1,2,3"
-          => [ "1,2,3" ]
+        # => [ "1,2,3" ]
         ```
       "%
       = fun sep s => %string/split% s sep,
@@ -2784,11 +4358,12 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.string.trim " hi  "
-          => "hi"
+        # => "hi"
+
         std.string.trim "1   2   3   "
-          => "1   2   3"
+        # => "1   2   3"
         ```
       "%
       = fun s => %string/trim% s,
@@ -2802,7 +4377,7 @@
 
         ```nickel
         std.string.characters "Hello"
-          => [ "H", "e", "l", "l", "o" ]
+        # => [ "H", "e", "l", "l", "o" ]
         ```
       "%
       = fun s => %string/chars% s,
@@ -2815,13 +4390,15 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.string.uppercase "a"
-          => "A"
+        # => "A"
+
         std.string.uppercase "æ"
-          => "Æ"
+        # => "Æ"
+
         std.string.uppercase "hello.world"
-          => "HELLO.WORLD"
+        # => "HELLO.WORLD"
         ```
       "%
       = fun s => %string/uppercase% s,
@@ -2835,13 +4412,15 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.string.lowercase "A"
-          => "a"
+        # => "a"
+
         std.string.lowercase "Æ"
-          => "æ"
+        # => "æ"
+
         std.string.lowercase "HELLO.WORLD"
-          => "hello.world"
+        # => "hello.world"
         ```
       "%
       = fun s => %string/lowercase% s,
@@ -2856,16 +4435,38 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.string.contains "cde" "abcdef"
-          => true
+        # => true
+
         std.string.contains "" "abcdef"
-          => true
+        # => true
+
         std.string.contains "ghj" "abcdef"
-          => false
+        # => false
         ```
       "%
       = fun subs s => %string/contains% s subs,
+
+    compare
+      : String -> String -> [| 'Lesser, 'Equal, 'Greater |]
+      | doc m%"
+        Compares two strings lexicographically.
+
+        # Examples
+
+        ```nickel multiline
+        std.string.compare "abc" "def"
+        # => 'Lesser
+
+        std.string.compare "a" "a"
+        # => 'Equal
+
+        std.string.compare "world" "hello"
+        # => 'Greater
+        ```
+      "%
+      = fun a b => %string/compare% a b,
 
     replace
       : String -> String -> String -> String
@@ -2877,11 +4478,12 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.string.replace "cd" "   " "abcdef"
-          => "ab   ef"
+        # => "ab   ef"
+
         std.string.replace "" "A" "abcdef"
-          => "AaAbAcAdAeAfA"
+        # => "AaAbAcAdAeAfA"
         ```
       "%
       = fun pattern replace s =>
@@ -2899,11 +4501,12 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.string.replace_regex "l+." "j" "Hello!"
-          => "Hej!"
+        # => "Hej!"
+
         std.string.replace_regex "\\d+" "\"a\" is not" "This 37 is a number."
-          "This \"a\" is not a number."
+        # "This \"a\" is not a number."
       ```
       "%
       = fun pattern replace s =>
@@ -2922,11 +4525,12 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.string.is_match "^\\d+$" "123"
-          => true
+        # => true
+
         std.string.is_match "\\d{4}" "123"
-          => false
+        # => false
         ```
 
         # Performance
@@ -2946,7 +4550,7 @@
         in
         ["0", "42", "0.5"]
         |> std.array.all is_number
-          => true
+        # => true
         ```
 
         On the other hand, in the version below, the partial application of
@@ -2958,7 +4562,7 @@
         let is_number' = std.string.is_match "[0-9]*\\.?[0-9]+" in
         ["0", "42", "0.5"]
         |> std.array.all is_number'
-          => true
+        # => true
         ```
       "%
       = fun regex => %string/is_match% regex,
@@ -2980,11 +4584,12 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.string.find "^(\\d).*(\\d).*(\\d).*$" "5 apples, 6 pears and 0 grapes"
-          => { matched = "5 apples, 6 pears and 0 grapes", index = 0, groups = [ "5", "6", "0" ] }
+        # => { matched = "5 apples, 6 pears and 0 grapes", index = 0, groups = [ "5", "6", "0" ] }
+
         std.string.find "3" "01234"
-          => { matched = "3", index = 3, groups = [ ] }
+        # => { matched = "3", index = 3, groups = [ ] }
         ```
 
         # Performance
@@ -3013,19 +4618,20 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.string.find_all "(\\d) (\\w+)" "5 apples, 6 pears and 0 grapes"
-          => [
-            { groups = [ "5", "apples" ], index = 0, matched = "5 apples", },
-            { groups = [ "6", "pears" ], index = 10, matched = "6 pears", },
-            { groups = [ "0", "grapes" ], index = 22, matched = "0 grapes", }
-          ]
+        # => [
+        #   { groups = [ "5", "apples" ], index = 0, matched = "5 apples", },
+        #   { groups = [ "6", "pears" ], index = 10, matched = "6 pears", },
+        #   { groups = [ "0", "grapes" ], index = 22, matched = "0 grapes", }
+        # ]
+
         std.string.find_all "2" "123 123 123"
-          => [
-            { groups = [  ], index = 1, matched = "2", },
-            { groups = [  ], index = 5, matched = "2", },
-            { groups = [  ], index = 9, matched = "2", }
-          ]
+        # => [
+        #   { groups = [  ], index = 1, matched = "2", },
+        #   { groups = [  ], index = 5, matched = "2", },
+        #   { groups = [  ], index = 9, matched = "2", }
+        # ]
         ```
 
         # Performance
@@ -3052,15 +4658,18 @@
 
         # Examples
 
-        ```nickel
-        std.string.length "" =>
-          => 0
-        std.string.length "hi" =>
-          => 2
-        std.string.length "四字熟語" =>
-          => 4
-        std.string.length "👨🏾‍❤️‍💋‍👨🏻" =>
-          => 1
+        ```nickel multiline
+        std.string.length ""
+        # => 0
+
+        std.string.length "hi"
+        # => 2
+
+        std.string.length "四字熟語"
+        # => 4
+
+        std.string.length "👨🏾‍❤️‍💋‍👨🏻"
+        # => 1
         ```
       "%
       = fun s => %string/length% s,
@@ -3080,13 +4689,15 @@
 
         # Examples
 
-        ```nickel
-        std.string.substring 3 5 "abcdef" =>
-          "de"
-        std.string.substring 3 10 "abcdef" =>
-          error
-        std.string.substring (-3) 4 "abcdef" =>
-          error
+        ```nickel multiline
+        std.string.substring 3 5 "abcdef"
+        # => "de"
+
+        std.string.substring 3 10 "abcdef"
+        # => error
+
+        std.string.substring (-3) 4 "abcdef"
+        # => error
         ```
       "%
       = fun start end s => %string/substr% s start end,
@@ -3099,15 +4710,18 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.string.from 42
-          => "42"
+        # => "42"
+
         std.string.from 'Foo
-          => "Foo"
+        # => "Foo"
+
         std.string.from null
-          => "null"
+        # => "null"
+
         std.string.from {value = 0}
-          => error
+        # => error
         ```
       "%
       = fun x => %to_string% x,
@@ -3121,7 +4735,7 @@
 
         ```nickel
         std.string.from_number 42
-          => "42"
+        # => "42"
         ```
       "%
       = from,
@@ -3136,7 +4750,7 @@
 
         ```nickel
         std.string.from_enum 'MyEnum
-          => "MyEnum"
+        # => "MyEnum"
         ```
       "%
       = from,
@@ -3150,7 +4764,7 @@
 
         ```nickel
         std.string.from_bool true
-          => "true"
+        # => "true"
         ```
       "%
       = from,
@@ -3165,7 +4779,7 @@
 
         ```nickel
         std.string.to_number "123"
-          => 123
+        # => 123
         ```
       "%
       = fun s => %number/from_string% s,
@@ -3178,11 +4792,12 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.string.to_bool "true"
-          => true
+        # => true
+
         std.string.to_bool "false"
-          => false
+        # => false
         ```
       "%
       # because of the contract on the argument, `s` can only be `"true"` or
@@ -3196,11 +4811,12 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         std.string.to_enum "Hello"
-          => 'Hello
+        # => 'Hello
+
         std.string.to_enum "hey,there!"
-          => '"hey,there!"
+        # => '"hey,there!"
         ```
       "%
       = fun s => %enum/from_string% s,
@@ -3213,15 +4829,21 @@
 
         # Examples
 
-        ```nickel
+        ```nickel multiline
         1 == 2 | std.test.Assert
-         => error: contract broken by a value
+        # => error: contract broken by a value
 
         1 == 1 | std.test.Assert
-         => true
+        # => true
         ```
         "%
-      = fun label value => if value then true else %blame% label,
+      =
+        %contract/custom% (fun _label value =>
+          if value then
+            'Ok value
+          else
+            'Error {}
+        ),
 
     assert_all
       | Array Assert -> Bool
@@ -3236,7 +4858,7 @@
 
         ```nickel
         [ (1 == 2), (1 == 1), (1 == 3) ] |> std.test.assert_all
-         => error: contract broken by a value
+        # => error: contract broken by the caller
         ```
         "%
       # We mostly rely on the contracts to do the work here. We just need to
@@ -3251,11 +4873,12 @@
 
       # Examples
 
-      ```nickel
+      ```nickel multiline
       std.is_number 1
-        => true
+      # => true
+
       std.is_number "Hello, World!"
-        => false
+      # => false
       ```
     "%
     = fun x => %typeof% x == 'Number,
@@ -3267,11 +4890,12 @@
 
       # Examples
 
-      ```nickel
+      ```nickel multiline
       std.is_bool false
-        => true
+      # => true
+
       std.is_bool 42
-        => false
+      # => false
       ```
     "%
     = fun x => %typeof% x == 'Bool,
@@ -3283,11 +4907,12 @@
 
       # Examples
 
-      ```nickel
+      ```nickel multiline
       std.is_string true
-        => false
+      # => false
+
       std.is_string "Hello, World!"
-        => true
+      # => true
       ```
     "%
     = fun x => %typeof% x == 'String,
@@ -3299,11 +4924,12 @@
 
       # Examples
 
-      ```nickel
+      ```nickel multiline
       std.is_enum true
-        => false
-      std.is_enum `false
-        => true
+      # => false
+
+      std.is_enum 'false
+      # => true
       ```
     "%
     = fun x => %typeof% x == 'Enum,
@@ -3315,11 +4941,12 @@
 
       # Examples
 
-      ```nickel
+      ```nickel multiline
       std.is_function (fun x => x)
-        => true
+      # => true
+
       std.is_function 42
-        => false
+      # => false
       ```
     "%
     = fun x => %typeof% x == 'Function,
@@ -3331,11 +4958,12 @@
 
       # Examples
 
-      ```nickel
+      ```nickel multiline
       std.is_array [ 1, 2 ]
-        => true
+      # => true
+
       std.is_array 42
-        => false
+      # => false
       ```
     "%
     = fun x => %typeof% x == 'Array,
@@ -3347,11 +4975,12 @@
 
       # Examples
 
-      ```nickel
+      ```nickel multiline
       std.is_record [ 1, 2 ]
-        => false
+      # => false
+
       std.is_record { hello = "Hello", world = "World" }
-        => true
+      # => true
       ```
     "%
     = fun x => %typeof% x == 'Record,
@@ -3367,21 +4996,69 @@
       'Array,
       'Record,
       'ForeignId,
+      'CustomContract,
+      'Type,
       'Other
     |]
     | doc m%"
       Returns the type of a value.
 
+      See also `std.cast`, which augments the type with a statically typed enum payload.
+
       # Examples
 
-      ```nickel
+      ```nickel multiline
       std.typeof [ 1, 2 ]
-        => 'Array
+      # => 'Array
+
       std.typeof (fun x => x)
-        => 'Function
+      # => 'Function
       ```
     "%
     = fun x => %typeof% x,
+
+  cast
+    : Dyn -> [|
+      'Number Number,
+      'Bool Bool,
+      'String String,
+      'Enum Dyn,
+      'Label Dyn,
+      'Function (Dyn -> Dyn),
+      'Array (Array Dyn),
+      'Record { _ : Dyn },
+      'ForeignId Dyn,
+      'CustomContract Dyn,
+      'Type Dyn,
+      'Other Dyn
+    |]
+    | doc m%"
+      Returns the value, wrapped in a type discriminator.
+
+      Mainly useful in statically typed code, because it allows you to extract a
+      statically typed value in a match statement.
+
+      See also `std.typeof`, which gets the type of a value without returning a
+      statically typed payload.
+
+      # Examples
+
+      ```nickel multiline
+      std.cast [ 1, 2 ]
+      # => 'Array [ 1, 2 ]
+
+      let len_or_zero: Dyn -> Number = fun x => std.cast x
+        |> match {
+          'Array xs => std.array.length xs,
+          'Record xs => std.record.length xs,
+          _ => 0
+        }
+      in
+        len_or_zero [ 1, 2 ]
+      # => 2
+      ```
+    "%
+    = fun x => %cast% x,
 
   seq
     : forall a. Dyn -> a -> a
@@ -3403,13 +5080,15 @@
 
       # Examples
 
-      ```nickel
+      ```nickel multiline
       std.seq (42 / 0) 37
-        => error
+      # => error
+
       std.seq (42 / 2) 37
-        => 37
+      # => 37
+
       std.seq { too_far = 42 / 0 } 37
-        => 37
+      # => 37
       ```
     "%
     = fun x y => %seq% x y,
@@ -3423,13 +5102,15 @@
 
       # Examples
 
-      ```nickel
+      ```nickel multiline
       std.deep_seq (42 / 0) 37
-        => error
+      # => error
+
       std.deep_seq (42 / 2) 37
-        => 37
+      # => 37
+
       std.deep_seq [1+1, { not_too_far = [42 / 0] }] 37
-        => error
+      # => error
       ```
     "%
     = fun x y => %deep_seq% x y,
@@ -3443,7 +5124,7 @@
 
       ```nickel
       std.hash 'Md5 "hunter2"
-        => "2ab96390c7dbe3439de74d0c9b0b1767"
+      # => "2ab96390c7dbe3439de74d0c9b0b1767"
       ```
     "%
     = fun type s => %hash% type s,
@@ -3456,11 +5137,8 @@
       # Examples
 
       ```nickel
-      serialize 'Json { hello = "Hello", world = "World" } =>
-        "{
-          \"hello\": \"Hello\",
-          \"world\": \"World\"
-        }"
+      serialize 'Json { hello = "Hello", world = "World" }
+      # => "{\n  \"hello\": \"Hello\",\n  \"world\": \"World\"\n}"
       ```
     "%
     = fun format x => %serialize% format (%force% x),
@@ -3474,7 +5152,7 @@
 
       ```nickel
       deserialize 'Json "{ \"hello\": \"Hello\", \"world\": \"World\" }"
-        { hello = "Hello", world = "World" }
+      # => { hello = "Hello", world = "World" }
       ```
     "%
     = fun format x => %deserialize% format x,
@@ -3487,13 +5165,15 @@
 
       # Examples
 
-      ```nickel
-      std.to_string 42 =>
-        "42"
-      std.to_string 'Foo =>
-        "Foo"
-      std.to_string null =>
-        "null"
+      ```nickel multiline
+      std.to_string 42
+      # => "42"
+
+      std.to_string 'Foo
+      # => "Foo"
+
+      std.to_string null
+      # => "null"
       ```
     "%
     = fun x => %to_string% x,
@@ -3508,8 +5188,8 @@
 
       ```nickel
       std.trace "Hello, world!" true
-        std.trace: Hello, world!
-        => true
+      # std.trace: Hello, world!
+      # => true
       ```
     "%
     = fun msg x => %trace% msg x,
@@ -3522,13 +5202,14 @@
 
       ```nickel
       1 | std.FailWith "message"
-        => error: contract broken by a value: message
+      # => error: message
       ```
     "%
-    = fun msg label value => std.contract.blame_with_message msg label,
+    = fun msg =>
+      %contract/custom% (fun _label _value => 'Error { message = msg }),
 
   fail_with
-    | String -> Dyn
+    | String -> (forall a. a)
     | doc m%"
       Abort the evaluation with the given message. The error will be reported as
       a contract violation, as `fail_with` uses `std.FailWith` under the hood.
@@ -3537,7 +5218,7 @@
 
       ```nickel
       std.fail_with "message"
-        => error: contract broken by a value: message
+      # => error: message
       ```
     "%
     = fun msg => null | FailWith msg,
