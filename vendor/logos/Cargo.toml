@@ -10,13 +10,23 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2018"
+edition = "2021"
+rust-version = "1.74.0"
 name = "logos"
-version = "0.12.1"
-authors = ["Maciej Hirsz <hello@maciej.codes>"]
+version = "0.15.1"
+authors = [
+    "Maciej Hirsz <hello@maciej.codes>",
+    "Jérome Eertmans (maintainer) <jeertmans@icloud.com>",
+]
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
 description = "Create ridiculously fast Lexers"
-documentation = "https://docs.rs/logos"
-readme = "../README.md"
+homepage = "https://logos.maciej.codes/"
+readme = "README.md"
 keywords = [
     "lexer",
     "lexical",
@@ -31,14 +41,83 @@ categories = [
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/maciejhirsz/logos"
 
-[dependencies.logos-derive]
-version = "0.12.1"
-optional = true
+[package.metadata.docs.rs]
+cargo-args = [
+    "-Zunstable-options",
+    "-Zrustdoc-scrape-examples",
+]
+features = ["debug"]
+rustdoc-args = [
+    "--cfg",
+    "docsrs",
+]
+
+[package.metadata.release]
+shared-version = true
+
+[[package.metadata.release.pre-release-replacements]]
+exactly = 1
+file = "book/src/getting-started.md"
+replace = 'logos = "{{version}}"'
+search = 'logos = "[0-9]+\.[0-9]+\.[0-9]+"'
 
 [features]
+debug = ["logos-derive?/debug"]
 default = [
     "export_derive",
     "std",
 ]
 export_derive = ["logos-derive"]
+forbid_unsafe = ["logos-derive?/forbid_unsafe"]
 std = []
+
+[lib]
+name = "logos"
+path = "src/lib.rs"
+bench = false
+
+[[example]]
+name = "brainfuck"
+path = "examples/brainfuck.rs"
+doc-scrape-examples = true
+
+[[example]]
+name = "calculator"
+path = "examples/calculator.rs"
+
+[[example]]
+name = "custom_error"
+path = "examples/custom_error.rs"
+
+[[example]]
+name = "extras"
+path = "examples/extras.rs"
+
+[[example]]
+name = "json"
+path = "examples/json.rs"
+
+[[example]]
+name = "json-borrowed"
+path = "examples/json_borrowed.rs"
+
+[[example]]
+name = "string-interpolation"
+path = "examples/string-interpolation.rs"
+
+[dependencies.logos-derive]
+version = "0.15.1"
+optional = true
+
+[dev-dependencies.ariadne]
+version = "0.4"
+features = ["auto-color"]
+
+[dev-dependencies.chumsky]
+version = "0.10.0"
+
+[profile.bench]
+lto = true
+
+[profile.release]
+lto = true

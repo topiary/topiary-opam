@@ -42,9 +42,9 @@ use crate::natural::arithmetic::mul::poly_eval::{
     limbs_mul_toom_evaluate_poly_in_2_pow_neg_and_neg_2_pow_neg,
 };
 use crate::natural::arithmetic::mul::poly_interpolate::{
-    limbs_mul_toom_interpolate_12_points, limbs_mul_toom_interpolate_16_points,
     limbs_mul_toom_interpolate_5_points, limbs_mul_toom_interpolate_6_points,
     limbs_mul_toom_interpolate_7_points, limbs_mul_toom_interpolate_8_points,
+    limbs_mul_toom_interpolate_12_points, limbs_mul_toom_interpolate_16_points,
 };
 use crate::natural::arithmetic::mul::{
     limbs_mul_greater_to_out, limbs_mul_greater_to_out_basecase,
@@ -64,10 +64,10 @@ use crate::natural::arithmetic::sub::{
 };
 use crate::natural::comparison::cmp::limbs_cmp_same_length;
 use crate::platform::{
-    Limb, MUL_FFT_THRESHOLD, MUL_TOOM22_THRESHOLD, MUL_TOOM33_THRESHOLD, MUL_TOOM44_THRESHOLD,
-    MUL_TOOM6H_THRESHOLD, MUL_TOOM8H_THRESHOLD,
+    Limb, MUL_FFT_THRESHOLD, MUL_TOOM6H_THRESHOLD, MUL_TOOM8H_THRESHOLD, MUL_TOOM22_THRESHOLD,
+    MUL_TOOM33_THRESHOLD, MUL_TOOM44_THRESHOLD,
 };
-use core::cmp::{max, Ordering::*};
+use core::cmp::{Ordering::*, max};
 use malachite_base::fail_on_untested_path;
 use malachite_base::num::arithmetic::traits::{
     ArithmeticCheckedShl, DivRound, EqModPowerOf2, ShrRound, WrappingAddAssign, WrappingSubAssign,
@@ -1215,7 +1215,7 @@ pub_crate_test! {limbs_mul_greater_to_out_toom_42(
     limbs_mul_same_length_to_out(v_2, as2, bs2, mul_scratch);
     // size: s, t
     limbs_mul_to_out(v_inf, xs_3, ys_1, mul_scratch);
-    // size: n + 1
+    // size: n
     limbs_mul_same_length_to_out(v_1, as1_init, bs1_init, mul_scratch);
     let v_1 = &mut v_1[n..];
     let mut carry = match *as1_last {

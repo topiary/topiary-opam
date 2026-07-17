@@ -1,9 +1,15 @@
 //! Rendering of the results of a metadata query.
-use crate::identifier::{Ident, LocIdent};
-use crate::term::{
-    record::{Field, FieldMetadata},
-    MergePriority, Term,
+use serde::Serialize;
+
+use crate::{
+    identifier::{Ident, LocIdent},
+    pretty::PrettyPrintCap,
+    term::{
+        record::{Field, FieldMetadata},
+        MergePriority, Term,
+    },
 };
+
 use std::{io, io::Write};
 
 /// The maximum width for pretty-printing default values. Beyond this limit, the content is cut and
@@ -82,9 +88,7 @@ fn termimad_to_io(err: termimad::Error) -> io::Error {
         // Not an IO error per se, but creating a new error type and chaning the signatures of the
         // query printer functions just for this variant that is specific to the termimad backend
         // doesn't seem to worth it.
-        termimad::Error::InsufficientWidth(err) => {
-            io::Error::new(io::ErrorKind::Other, format!("{err}"))
-        }
+        termimad::Error::InsufficientWidth(err) => io::Error::other(format!("{err}")),
     }
 }
 
@@ -149,7 +153,7 @@ impl QueryPrinter for MarkdownRenderer {
 }
 
 /// Represent which metadata attributes are requested by a query.
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq, Serialize)]
 pub struct Attributes {
     pub doc: bool,
     pub contract: bool,
@@ -214,8 +218,9 @@ fn render_query_result<R: QueryPrinter>(
                 fields.sort();
                 renderer.write_fields(out, fields.into_iter().map(LocIdent::ident))
             }
-            Term::RecRecord(record, dyn_fields, ..) if !record.fields.is_empty() => {
+            Term::RecRecord(record, includes, dyn_fields, ..) if !record.fields.is_empty() => {
                 let mut fields: Vec<_> = record.fields.keys().map(LocIdent::ident).collect();
+                fields.extend(includes.iter().map(|incl| incl.ident.ident()));
                 fields.sort();
                 let dynamic = Ident::from("<dynamic>");
                 fields.extend(dyn_fields.iter().map(|_| dynamic));

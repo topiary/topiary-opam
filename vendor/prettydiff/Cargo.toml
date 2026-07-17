@@ -11,9 +11,16 @@
 
 [package]
 edition = "2018"
+rust-version = "1.70"
 name = "prettydiff"
-version = "0.6.4"
+version = "0.8.1"
 authors = ["Roman Koblov <penpen938@me.com>"]
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
 description = "Side-by-side diff for two files"
 homepage = "https://github.com/romankoblov/prettydiff"
 readme = "README.md"
@@ -27,27 +34,18 @@ categories = ["text-processing"]
 license = "MIT"
 repository = "https://github.com/romankoblov/prettydiff"
 
-[[bin]]
+[features]
+cli = ["prettytable-rs"]
+default = ["cli"]
+
+[lib]
 name = "prettydiff"
-required-features = ["cli"]
+path = "src/lib.rs"
 
-[dependencies.ansi_term]
-version = "0.12"
-
-[dependencies.pad]
-version = "0.1.6"
+[dependencies.owo-colors]
+version = "4.0"
 
 [dependencies.prettytable-rs]
 version = "0.10.0"
 optional = true
-
-[dependencies.structopt]
-version = "0.3"
-optional = true
-
-[features]
-cli = [
-    "prettytable-rs",
-    "structopt",
-]
-default = ["cli"]
+default-features = false

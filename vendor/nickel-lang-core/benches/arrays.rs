@@ -1,16 +1,15 @@
-use std::rc::Rc;
+#![cfg_attr(feature = "benchmark-ci", allow(unused_imports))]
 
-use criterion::{criterion_main, Criterion};
-use nickel_lang_core::term::{
-    array::{Array, ArrayAttrs},
-    Number, RichTerm, Term,
-};
-use nickel_lang_utils::{bench::EvalMode, ncl_bench_group};
-use pprof::criterion::{Output, PProfProfiler};
-use pretty::{BoxAllocator, DocBuilder, Pretty};
+use criterion::criterion_main;
+use nickel_lang_core::term::{array::ArrayAttrs, Number, RichTerm, Term};
+use nickel_lang_utils::{bench::criterion_config, bench::EvalMode, ncl_bench_group};
+use pretty::{DocBuilder, Pretty};
 
 /// Generates a pseaudo-random Nickel array as a string.
+#[cfg(not(feature = "benchmark-ci"))]
 fn ncl_random_array(len: usize) -> String {
+    use nickel_lang_core::pretty::Allocator;
+
     let m = 2_u64.pow(32);
     let a = 1664525;
     let c = 1013904223;
@@ -24,18 +23,20 @@ fn ncl_random_array(len: usize) -> String {
     }
 
     let xs = RichTerm::from(Term::Array(
-        Array::new(Rc::from(numbers)),
+        numbers.into_iter().collect(),
         ArrayAttrs::default(),
     ));
-    let doc: DocBuilder<_, ()> = xs.pretty(&BoxAllocator);
+    let alloc = Allocator::default();
+    let doc: DocBuilder<_, ()> = xs.pretty(&alloc);
     let mut out = Vec::new();
     doc.render(80, &mut out).unwrap();
     String::from_utf8(out).unwrap()
 }
 
+#[cfg(not(feature = "benchmark-ci"))]
 ncl_bench_group! {
 name = benches;
-config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
+config = criterion_config();
 {
         name = "foldr strings 50",
         path = "arrays/fold",
@@ -169,4 +170,63 @@ config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flam
         eval_mode = EvalMode::DeepSeq,
     }
 }
+
+#[cfg(feature = "benchmark-ci")]
+ncl_bench_group! {
+name = benches;
+config = criterion_config();
+{
+        name = "foldr strings 50",
+        path = "arrays/fold",
+        subtest = "right.strings",
+        args = (50),
+    }, {
+        name = "foldr strings 500",
+        path = "arrays/fold",
+        subtest = "right.strings",
+        args = (500),
+    }, {
+        name = "foldl arrays 50",
+        path = "arrays/fold",
+        subtest = "left.arrays",
+        args = (50),
+    }, {
+        name = "foldl arrays 500",
+        path = "arrays/fold",
+        subtest = "left.arrays",
+        args = (500),
+    }, {
+        name = "generate normal 50",
+        path = "arrays/generate",
+        subtest = "checked",
+        args = (50),
+    }, {
+        name = "generate normal 250",
+        path = "arrays/generate",
+        subtest = "checked",
+        // Most other benchmarks have a factor of 10 between
+        // the small and large sizes, but this one is slow so
+        // use a factor of 5.
+        args = (250),
+    }, {
+        name = "generate normal unchecked 200",
+        path = "arrays/generate",
+        subtest = "unchecked",
+        args = (200),
+    }, {
+        name = "generate normal unchecked 1000",
+        path = "arrays/generate",
+        subtest = "unchecked",
+        args = (1000),
+    }, {
+        name = "pipe normal 20",
+        path = "arrays/pipe",
+        args = (20),
+    }, {
+        name = "pipe normal 200",
+        path = "arrays/pipe",
+        args = (200),
+    },
+}
+
 criterion_main!(benches);

@@ -24,6 +24,7 @@
 //! we can generate inlined versions on-the-fly here).
 use super::*;
 use crate::{
+    metrics::increment,
     mk_app,
     term::{
         make, record::FieldMetadata, BinaryOp, MatchBranch, MatchData, NAryOp, RecordExtKind,
@@ -41,8 +42,6 @@ fn record_insert() -> BinaryOp {
         op_kind: RecordOpKind::ConsiderAllFields,
     }
 }
-
-/// Generate a record update
 
 /// Generate a Nickel expression which inserts a new binding in the working dictionary.
 ///
@@ -102,7 +101,7 @@ fn remove_from_rest(rest_field: LocIdent, field: LocIdent, bindings_id: LocIdent
 /// More precisely, [with_default_value] generates the following code:
 ///
 /// ```nickel
-/// if !(%field_is_defined% "<field>" record_id) then
+/// if !(%record/field_is_defined% "<field>" record_id) then
 ///   if %record/has_field% "<field>" record_id then
 ///     record_id & { "<field>" = default }
 ///   else
@@ -179,13 +178,11 @@ fn update_with_merge(record_id: LocIdent, id: LocIdent, field: Field) -> RichTer
 
     let span = annot
         .iter()
-        .map(|labeled_ty| labeled_ty.label.span)
+        .filter_map(|labeled_ty| labeled_ty.label.span)
         .chain(pos_value)
         // We fuse all the definite spans together.
         // unwrap(): all span should come from the same file
-        // unwrap(): we hope that at least one position is defined
-        .reduce(|span1, span2| span1.fuse(span2).unwrap())
-        .unwrap();
+        .reduce(|span1, span2| span1.fuse(span2).unwrap());
 
     let merge_label = MergeLabel {
         span,
@@ -238,7 +235,7 @@ impl CompilePart for Pattern {
         //
         // if `alias` is set, or just `continuation` otherwise.
         if let Some(alias) = self.alias {
-            make::let_in(
+            make::let_one_in(
                 bindings_id,
                 insert_binding(alias, value_id, bindings_id),
                 continuation,
@@ -339,7 +336,7 @@ impl CompilePart for OrPattern {
                     pattern.compile_part(value_id, bindings_id),
                 );
 
-                make::let_in(prev_bindings, cont, if_block)
+                make::let_one_in(prev_bindings, cont, if_block)
             })
     }
 }
@@ -363,14 +360,14 @@ impl CompilePart for RecordPattern {
     //      - initial accumulator is `%record/insert% "<REST_FIELD>" bindings_id value_id`
     //      >
     //
-    //     # If there is a default value, we must set it before the %field_is_defined% check below,
+    //     # If there is a default value, we must set it before the %record/field_is_defined% check below,
     //     # because the default acts like if the original matched value always have this field
     //     # defined
     //     <if field.default.is_some()>
     //       let value_id = <with_default_value value_id field default> in
     //     <end if>
     //
-    //      if %field_is_defined% field value_id then
+    //      if %record/field_is_defined% field value_id then
     //         <if !field_pat.annotation.is_empty()>
     //           let value_id = value_id & { "<field>" | <field_pat.annotation> } in
     //         <end if>
@@ -429,14 +426,14 @@ impl CompilePart for RecordPattern {
         //  - initial accumulator is `%record/insert% "<REST>" bindings_id value_id`
         // >
         //
-        // # If there is a default value, we must set it before the %field_is_defined% check below,
+        // # If there is a default value, we must set it before the %record/field_is_defined% check below,
         // # because the default acts like if the original matched value always have this field
         // # defined
         // <if field.default.is_some()>
         //   let value_id = <with_default_value value_id field default> in
         // <end if>
         //
-        // if %field_is_defined% field value_id then
+        // if %record/field_is_defined% field value_id then
         //   # If the field is present, we apply the potential contracts coming from user-provided
         //   # annotations before anything else. We just offload the actual work to `&`
         //   <if !field_pat.annotation.is_empty() >
@@ -458,7 +455,7 @@ impl CompilePart for RecordPattern {
 
             // let bindings_id = <remove_from_rest(field, local_bindings_id)> in
             // <field.compile_part(local_value_id, local_bindings_id)>
-            let updated_bindings_let = make::let_in(
+            let updated_bindings_let = make::let_one_in(
                 local_bindings_id,
                 remove_from_rest(rest_field, field, local_bindings_id),
                 field_pat
@@ -477,7 +474,7 @@ impl CompilePart for RecordPattern {
 
             // let local_value_id = <extracted_value> in <updated_bindings_let>
             let inner_else_block =
-                make::let_in(local_value_id, extracted_value, updated_bindings_let);
+                make::let_one_in(local_value_id, extracted_value, updated_bindings_let);
 
             // The innermost if:
             //
@@ -492,13 +489,13 @@ impl CompilePart for RecordPattern {
             );
 
             // let local_bindings_id = cont in <value_let>
-            let binding_cont_let = make::let_in(local_bindings_id, cont, inner_if);
+            let binding_cont_let = make::let_one_in(local_bindings_id, cont, inner_if);
 
             // <if !field.annotation.is_empty()>
             //   let value_id = <update_with_merge...> in <binding_cont_let>
             // <end if>
             let optional_merge = if !field_pat.annotation.is_empty() {
-                make::let_in(
+                make::let_one_in(
                     value_id,
                     update_with_merge(
                         value_id,
@@ -514,7 +511,7 @@ impl CompilePart for RecordPattern {
                 binding_cont_let
             };
 
-            // %field_is_defined% field value_id
+            // %record/field_is_defined% field value_id
             let has_field = make::op2(
                 BinaryOp::RecordFieldIsDefined(RecordOpKind::ConsiderAllFields),
                 Term::Str(field.label().into()),
@@ -528,7 +525,7 @@ impl CompilePart for RecordPattern {
             //   let value_id = <with_default_value value_id field default> in
             // <end if>
             if let Some(default) = field_pat.default.as_ref() {
-                make::let_in(
+                make::let_one_in(
                     value_id,
                     with_default_value(value_id, field, default.clone()),
                     enclosing_if,
@@ -613,7 +610,7 @@ impl CompilePart for RecordPattern {
 
         // The let enclosing the fold block and the final block:
         // let final_bindings_id = <fold_block> in <tail_block>
-        let outer_let = make::let_in(final_bindings_id, fold_block, guard_tail_block);
+        let outer_let = make::let_one_in(final_bindings_id, fold_block, guard_tail_block);
 
         // if <is_record> then <outer_let> else null
         make::if_then_else(is_record, outer_let, Term::Null)
@@ -623,7 +620,7 @@ impl CompilePart for RecordPattern {
 impl CompilePart for ArrayPattern {
     // Compilation of an array pattern.
     //
-    // let value_len = %array_length% value_id in
+    // let value_len = %array/length% value_id in
     //
     // <if self.is_open()>
     // if %typeof% value_id == 'Array && value_len >= <self.patterns.len()>
@@ -641,7 +638,7 @@ impl CompilePart for ArrayPattern {
     //       if local_bindings_id == null then
     //         null
     //       else
-    //         let local_value_id = %array_access% <idx> value_id in
+    //         let local_value_id = %array/at% <idx> value_id in
     //         <elem_pat.compile_part(local_value_id, local_bindings_id)>
     //
     //     <end fold>
@@ -673,7 +670,7 @@ impl CompilePart for ArrayPattern {
         //       if local_bindings_id == null then
         //         null
         //       else
-        //         let local_value_id = %array_access% <idx> value_id in
+        //         let local_value_id = %array/at% <idx> value_id in
         //         <self.patterns[idx].compile_part(local_value_id, local_bindings_id)>
         //
         //     <end fold>
@@ -686,7 +683,7 @@ impl CompilePart for ArrayPattern {
                 // <self.patterns[idx].compile_part(local_value_id, local_bindings_id)>
                 let updated_bindings_let = elem_pat.compile_part(local_value_id, local_bindings_id);
 
-                // %array_access% idx value_id
+                // %array/at% idx value_id
                 let extracted_value = make::op2(
                     BinaryOp::ArrayAt,
                     Term::Var(value_id),
@@ -695,7 +692,7 @@ impl CompilePart for ArrayPattern {
 
                 // let local_value_id = <extracted_value> in <updated_bindings_let>
                 let inner_else_block =
-                    make::let_in(local_value_id, extracted_value, updated_bindings_let);
+                    make::let_one_in(local_value_id, extracted_value, updated_bindings_let);
 
                 // The innermost if:
                 //
@@ -710,7 +707,7 @@ impl CompilePart for ArrayPattern {
                 );
 
                 // let local_bindings_id = cont in <inner_if>
-                make::let_in(local_bindings_id, cont, inner_if)
+                make::let_one_in(local_bindings_id, cont, inner_if)
             },
         );
 
@@ -770,13 +767,13 @@ impl CompilePart for ArrayPattern {
 
         // The let enclosing the fold block and the let binding `final_bindings_id`:
         // let final_bindings_id = <fold_block> in <tail_block>
-        let outer_let = make::let_in(final_bindings_id, fold_block, guard_tail_block);
+        let outer_let = make::let_one_in(final_bindings_id, fold_block, guard_tail_block);
 
         // if <outer_check> then <outer_let> else null
         let outer_if = make::if_then_else(outer_check, outer_let, Term::Null);
 
         // finally, we need to bind `value_len_id` to the length of the array
-        make::let_in(
+        make::let_one_in(
             value_len_id,
             make::op1(UnaryOp::ArrayLength, Term::Var(value_id)),
             outer_if,
@@ -786,7 +783,7 @@ impl CompilePart for ArrayPattern {
 
 impl CompilePart for EnumPattern {
     fn compile_part(&self, value_id: LocIdent, bindings_id: LocIdent) -> RichTerm {
-        // %enum_get_tag% value_id == '<self.tag>
+        // %enum/get_tag% value_id == '<self.tag>
         let tag_matches = make::op2(
             BinaryOp::Eq,
             make::op1(UnaryOp::EnumGetTag, Term::Var(value_id)),
@@ -794,13 +791,13 @@ impl CompilePart for EnumPattern {
         );
 
         if let Some(pat) = &self.pattern {
-            // if %enum_is_variant% value_id && %enum_get_tag% value_id == '<self.tag> then
-            //   let value_id = %enum_unwrap_variant% value_id in
+            // if %enum/is_variant% value_id && %enum/get_tag% value_id == '<self.tag> then
+            //   let value_id = %enum/get_arg% value_id in
             //   <pattern.compile(value_id, bindings_id)>
             // else
             //   null
 
-            // %enum_is_variant% value_id && <tag_matches>
+            // %enum/is_variant% value_id && <tag_matches>
             let if_condition = mk_app!(
                 make::op1(
                     UnaryOp::BoolAnd,
@@ -811,7 +808,7 @@ impl CompilePart for EnumPattern {
 
             make::if_then_else(
                 if_condition,
-                make::let_in(
+                make::let_one_in(
                     value_id,
                     make::op1(UnaryOp::EnumGetArg, Term::Var(value_id)),
                     pat.compile_part(value_id, bindings_id),
@@ -819,7 +816,7 @@ impl CompilePart for EnumPattern {
                 Term::Null,
             )
         } else {
-            // if %typeof% value_id == 'Enum && !(%enum_is_variant% value_id) && <tag_matches> then
+            // if %typeof% value_id == 'Enum && !(%enum/is_variant% value_id) && <tag_matches> then
             //   bindings_id
             // else
             //   null
@@ -831,7 +828,7 @@ impl CompilePart for EnumPattern {
                 Term::Enum("Enum".into()),
             );
 
-            // !(%enum_is_variant% value_id)
+            // !(%enum/is_variant% value_id)
             let is_enum_tag = make::op1(
                 UnaryOp::BoolNot,
                 make::op1(UnaryOp::EnumIsVariant, Term::Var(value_id)),
@@ -873,6 +870,8 @@ impl Compile for MatchData {
     //      # this primop evaluates body with an environment extended with bindings_id
     //      %pattern_branch% body bindings_id
     fn compile(mut self, value: RichTerm, pos: TermPos) -> RichTerm {
+        increment!("pattern_compile");
+
         if self.branches.iter().all(|branch| {
             // While we could get something working even with a guard, it's a bit more work and
             // there's no current incentive to do so (a guard on a tags-only match is arguably less
@@ -1008,10 +1007,10 @@ impl Compile for MatchData {
                 // let init_bindings_id = {} in
                 // let bindings_id = <pattern.compile_part(value_id, init_bindings)> in
                 // <inner>
-                make::let_in(
+                make::let_one_in(
                     init_bindings_id,
                     Term::Record(RecordData::empty()),
-                    make::let_in(
+                    make::let_one_in(
                         bindings_id,
                         branch.pattern.compile_part(value_id, init_bindings_id),
                         inner,
@@ -1020,7 +1019,7 @@ impl Compile for MatchData {
             });
 
         // let value_id = value in <fold_block>
-        make::let_in(value_id, value, fold_block)
+        make::let_one_in(value_id, value, fold_block)
     }
 }
 
@@ -1034,6 +1033,8 @@ struct TagsOnlyMatch {
 
 impl Compile for TagsOnlyMatch {
     fn compile(self, value: RichTerm, pos: TermPos) -> RichTerm {
+        increment!("pattern_comile(tags_only_match)");
+
         // We simply use the corresponding specialized primop in that case.
         let match_op = mk_app!(
             make::op1(

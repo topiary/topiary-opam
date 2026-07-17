@@ -50,7 +50,7 @@ macro_rules! file_ext {
             /// currently locked (see `lock_contended_error`).
             fn try_lock_shared(&self) -> Result<()>;
 
-            /// Locks the file for shared usage, or returns an error if the file is
+            /// Locks the file for exclusive usage, or returns an error if the file is
             /// currently locked (see `lock_contended_error`).
             fn try_lock_exclusive(&self) -> Result<()>;
 
@@ -393,6 +393,10 @@ cfg_sync! {
   pub(crate) mod std_impl;
 }
 
-cfg_fs_err! {
-    pub(crate) mod fs_err_impl;
+cfg_fs2_err! {
+    pub(crate) mod fs_err2_impl;
+}
+
+cfg_fs3_err! {
+    pub(crate) mod fs_err3_impl;
 }

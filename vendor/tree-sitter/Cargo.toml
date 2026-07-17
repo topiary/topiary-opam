@@ -11,10 +11,13 @@
 
 [package]
 edition = "2021"
-rust-version = "1.65"
+rust-version = "1.77"
 name = "tree-sitter"
-version = "0.24.7"
-authors = ["Max Brunsfeld <maxbrunsfeld@gmail.com>"]
+version = "0.26.3"
+authors = [
+    "Max Brunsfeld <maxbrunsfeld@gmail.com>",
+    "Amaan Qureshi <amaanq12@gmail.com>",
+]
 build = "binding_rust/build.rs"
 links = "tree-sitter"
 include = [
@@ -22,9 +25,11 @@ include = [
     "/Cargo.toml",
     "/src/*.h",
     "/src/*.c",
+    "/src/portable/*",
     "/src/unicode/*",
     "/src/wasm/*",
     "/include/tree_sitter/api.h",
+    "/LICENSE",
 ]
 autolib = false
 autobins = false
@@ -33,6 +38,7 @@ autotests = false
 autobenches = false
 description = "Rust bindings to the Tree-sitter parsing library"
 homepage = "https://tree-sitter.github.io/tree-sitter"
+documentation = "https://docs.rs/tree-sitter"
 readme = "binding_rust/README.md"
 keywords = [
     "incremental",
@@ -40,23 +46,47 @@ keywords = [
 ]
 categories = [
     "api-bindings",
+    "external-ffi-bindings",
     "parsing",
     "text-editors",
 ]
 license = "MIT"
 repository = "https://github.com/tree-sitter/tree-sitter"
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = [
+    "--cfg",
+    "docsrs",
+]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-gnu",
+]
+
+[features]
+default = ["std"]
+std = [
+    "regex/std",
+    "regex/perf",
+    "regex-syntax/unicode",
+]
+wasm = [
+    "std",
+    "wasmtime-c-api",
+]
+
 [lib]
 name = "tree_sitter"
 path = "binding_rust/lib.rs"
 
 [dependencies.regex]
-version = "1.10.6"
+version = "1.11.3"
 features = ["unicode"]
 default-features = false
 
 [dependencies.regex-syntax]
-version = "0.8.4"
+version = "0.8.6"
 default-features = false
 
 [dependencies.streaming-iterator]
@@ -66,27 +96,25 @@ version = "0.1.9"
 version = "0.1"
 
 [dependencies.wasmtime-c-api]
-version = "25.0.2"
-features = ["cranelift"]
+version = "33.0.2"
+features = [
+    "cranelift",
+    "gc-drc",
+]
 optional = true
 default-features = false
 package = "wasmtime-c-api-impl"
 
 [build-dependencies.bindgen]
-version = "0.70.1"
+version = "0.72.0"
 optional = true
 
 [build-dependencies.cc]
-version = "1.1.22"
+version = "1.2.48"
 
-[features]
-default = ["std"]
-std = [
-    "regex/std",
-    "regex/perf",
-    "regex-syntax/unicode",
-]
-wasm = ["wasmtime-c-api"]
+[build-dependencies.serde_json]
+version = "1.0.145"
+features = ["preserve_order"]
 
 [lints.clippy]
 branches_sharing_code = "allow"
@@ -109,6 +137,8 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 module_name_repetitions = "allow"
 multiple_crate_versions = "allow"
+needless_for_each = "allow"
+obfuscated_if_else = "allow"
 option_if_let_else = "allow"
 or_fun_call = "allow"
 range_plus_one = "allow"
@@ -137,3 +167,6 @@ priority = -1
 [lints.clippy.pedantic]
 level = "warn"
 priority = -1
+
+[lints.rust]
+mismatched_lifetime_syntaxes = "allow"

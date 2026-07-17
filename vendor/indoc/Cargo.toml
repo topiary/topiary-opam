@@ -11,10 +11,17 @@
 
 [package]
 edition = "2021"
-rust-version = "1.56"
+rust-version = "1.60"
 name = "indoc"
-version = "2.0.5"
+version = "2.0.7"
 authors = ["David Tolnay <dtolnay@gmail.com>"]
+build = false
+exclude = ["build.rs"]
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
 description = "Indented document literals"
 documentation = "https://docs.rs/indoc"
 readme = "README.md"
@@ -35,19 +42,54 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/dtolnay/indoc"
 
 [package.metadata.docs.rs]
-rustdoc-args = ["--generate-link-to-definition"]
 targets = ["x86_64-unknown-linux-gnu"]
+rustdoc-args = [
+    "--generate-link-to-definition",
+    "--generate-macro-expansion",
+    "--extern-html-root-url=core=https://doc.rust-lang.org",
+    "--extern-html-root-url=alloc=https://doc.rust-lang.org",
+    "--extern-html-root-url=std=https://doc.rust-lang.org",
+    "--extern-html-root-url=proc_macro=https://doc.rust-lang.org",
+]
 
 [lib]
-doc-scrape-examples = false
+name = "indoc"
+path = "src/lib.rs"
 proc-macro = true
+
+[[test]]
+name = "compiletest"
+path = "tests/compiletest.rs"
+
+[[test]]
+name = "test_concat"
+path = "tests/test_concat.rs"
+
+[[test]]
+name = "test_formatdoc"
+path = "tests/test_formatdoc.rs"
+
+[[test]]
+name = "test_indoc"
+path = "tests/test_indoc.rs"
+
+[[test]]
+name = "test_unindent"
+path = "tests/test_unindent.rs"
+
+[[test]]
+name = "test_writedoc"
+path = "tests/test_writedoc.rs"
 
 [dev-dependencies.rustversion]
 version = "1.0"
 
 [dev-dependencies.trybuild]
-version = "1.0.49"
+version = "1.0.108"
 features = ["diff"]
 
 [dev-dependencies.unindent]
 version = "0.2.3"
+
+[build-dependencies.rustversion]
+version = "1.0"

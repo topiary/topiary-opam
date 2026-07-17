@@ -6,29 +6,29 @@
 // Lesser General Public License (LGPL) as published by the Free Software Foundation; either version
 // 3 of the License, or (at your option) any later version. See <https://www.gnu.org/licenses/>.
 
+use crate::Rational;
 use crate::arithmetic::denominators_in_closed_interval::DenominatorsInClosedRationalInterval;
 use crate::arithmetic::traits::DenominatorsInClosedInterval;
-use crate::Rational;
-use core::iter::{once, Chain, Once};
+use core::iter::{Chain, Once, once};
 use core::mem::swap;
 use malachite_base::num::arithmetic::traits::{CoprimeWith, UnsignedAbs};
 use malachite_base::num::basic::traits::{One, Zero};
 use malachite_base::num::conversion::traits::RoundingFrom;
-use malachite_base::num::iterators::{ruler_sequence, RulerSequence};
+use malachite_base::num::iterators::{RulerSequence, ruler_sequence};
 use malachite_base::rounding_modes::RoundingMode::*;
 use malachite_base::tuples::exhaustive::{
-    exhaustive_dependent_pairs, ExhaustiveDependentPairs, ExhaustiveDependentPairsYsGenerator,
-};
-use malachite_nz::integer::exhaustive::{
-    exhaustive_integer_range, exhaustive_integer_range_to_infinity,
-    exhaustive_integer_range_to_negative_infinity, ExhaustiveIntegerRange,
-    ExhaustiveIntegerRangeToInfinity, ExhaustiveIntegerRangeToNegativeInfinity,
+    ExhaustiveDependentPairs, ExhaustiveDependentPairsYsGenerator, exhaustive_dependent_pairs,
 };
 use malachite_nz::integer::Integer;
-use malachite_nz::natural::exhaustive::{
-    exhaustive_positive_naturals, ExhaustiveNaturalRangeToInfinity,
+use malachite_nz::integer::exhaustive::{
+    ExhaustiveIntegerRange, ExhaustiveIntegerRangeToInfinity,
+    ExhaustiveIntegerRangeToNegativeInfinity, exhaustive_integer_range,
+    exhaustive_integer_range_to_infinity, exhaustive_integer_range_to_negative_infinity,
 };
 use malachite_nz::natural::Natural;
+use malachite_nz::natural::exhaustive::{
+    ExhaustiveNaturalRangeToInfinity, exhaustive_positive_naturals,
+};
 
 /// Generates all positive [`Rational`]s.
 ///
@@ -809,7 +809,7 @@ fn exhaustive_rational_range_helper(
 /// Generates all [`Natural`]s in an interval of the form $[a,b)$.
 ///
 /// This `struct` is created by [`exhaustive_rational_range`]; see its documentation for more.
-#[allow(private_interfaces)]
+#[allow(private_interfaces, clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub enum ExhaustiveRationalRange {
     Empty,
@@ -929,7 +929,7 @@ fn exhaustive_rational_inclusive_range_helper(
 ///
 /// This `struct` is created by [`exhaustive_rational_inclusive_range`]; see its documentation for
 /// more.
-#[allow(private_interfaces)]
+#[allow(private_interfaces, clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub enum ExhaustiveRationalInclusiveRange {
     Single(bool, Rational),

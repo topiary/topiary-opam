@@ -1,16 +1,17 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use pprof::criterion::{Output, PProfProfiler};
 
-use nickel_lang_core::cache::{Cache, ErrorTolerance};
+use nickel_lang_core::cache::CacheHub;
+use nickel_lang_utils::bench::criterion_config;
 
 pub fn typecheck_stdlib(c: &mut Criterion) {
-    let mut cache = Cache::new(ErrorTolerance::Strict);
-    cache.load_stdlib().unwrap();
-    let type_env = cache.mk_type_ctxt().unwrap();
     c.bench_function("typecheck stdlib", |b| {
         b.iter_batched(
-            || cache.clone(),
-            |mut c_local| c_local.typecheck_stdlib_(&type_env).unwrap(),
+            || {
+                let mut cache = CacheHub::new();
+                cache.load_stdlib().unwrap();
+                cache
+            },
+            |mut cache| cache.typecheck_stdlib().unwrap(),
             criterion::BatchSize::LargeInput,
         )
     });
@@ -18,7 +19,7 @@ pub fn typecheck_stdlib(c: &mut Criterion) {
 
 criterion_group!(
 name = benches;
-config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
+config = criterion_config();
 targets = typecheck_stdlib
 );
 criterion_main!(benches);

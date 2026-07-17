@@ -1,5 +1,5 @@
 # `f16` and `bf16` floating point types for Rust
-[![Crates.io](https://img.shields.io/crates/v/half.svg)](https://crates.io/crates/half/) [![Documentation](https://docs.rs/half/badge.svg)](https://docs.rs/half/) ![Crates.io](https://img.shields.io/crates/l/half) [![Build status](https://github.com/starkat99/half-rs/actions/workflows/rust.yml/badge.svg?branch=main&event=push)](https://github.com/starkat99/half-rs/actions/workflows/rust.yml) [![CircleCI](https://dl.circleci.com/status-badge/img/gh/starkat99/half-rs/tree/main.svg?style=svg)](https://dl.circleci.com/status-badge/redirect/gh/starkat99/half-rs/tree/main)
+[![Crates.io](https://img.shields.io/crates/v/half.svg)](https://crates.io/crates/half/) [![Documentation](https://docs.rs/half/badge.svg)](https://docs.rs/half/) ![Crates.io](https://img.shields.io/crates/l/half) [![Build status](https://github.com/VoidStarKat/half-rs/actions/workflows/rust.yml/badge.svg?branch=main&event=push)](https://github.com/VoidStarKat/half-rs/actions/workflows/rust.yml) [![CircleCI](https://dl.circleci.com/status-badge/img/gh/VoidStarKat/half-rs/tree/main.svg?style=svg)](https://dl.circleci.com/status-badge/redirect/gh/VoidStarKat/half-rs/tree/main)
 
 This crate implements a half-precision floating point `f16` type for Rust implementing the IEEE
 754-2008 standard [`binary16`](https://en.wikipedia.org/wiki/Half-precision_floating-point_format)
@@ -15,8 +15,8 @@ be required for some hardware.
 
 This crate provides [`no_std`](https://rust-embedded.github.io/book/intro/no-std.html) support so can easily be used in embedded code where a smaller float format is most useful.
 
-*Requires Rust 1.70 or greater.* If you need support for older versions of Rust, use 1.x versions of
-this crate.
+*Requires Rust 1.81 or greater.* If you need support for older versions of Rust, use previous 
+versions of this crate.
 
 See the [crate documentation](https://docs.rs/half/) for more details.
 
@@ -38,19 +38,22 @@ See the [crate documentation](https://docs.rs/half/) for more details.
 - **`serde`** - Implement `Serialize` and `Deserialize` traits for `f16` and `bf16`. This adds a
   dependency on the [`serde`](https://crates.io/crates/serde) crate.
 
-- **`num-traits`** — Enable `ToPrimitive`, `FromPrimitive`, `Num`, `Float`, `FloatCore` and
-  `Bounded` trait implementations from the [`num-traits`](https://crates.io/crates/num-traits) crate.
+- **`num-traits`** — Enable `ToPrimitive`, `FromPrimitive`, `ToBytes`, `FromBytes`, `Num`, `Float`,
+  `FloatCore`, `Signed`, and `Bounded` trait implementations from the
+  [`num-traits`](https://crates.io/crates/num-traits) crate.
 
 - **`bytemuck`** — Enable `Zeroable` and `Pod` trait implementations from the
   [`bytemuck`](https://crates.io/crates/bytemuck) crate.
 
-- **`zerocopy`** — Enable `AsBytes` and `FromBytes` trait implementations from the 
-  [`zerocopy`](https://crates.io/crates/zerocopy) crate.
-
-- **`rand_distr`** — Enable sampling from distributions like `Uniform` and `Normal` from the
-  [`rand_distr`](https://crates.io/crates/rand_distr) crate.
+- **`rand_distr`** — Enable sampling from distributions like `StandardUniform` and `StandardNormal` 
+  from the [`rand_distr`](https://crates.io/crates/rand_distr) crate.
 
 - **`rkyv`** -- Enable zero-copy deserializtion with [`rkyv`](https://crates.io/crates/rkyv) crate.
+
+- **`aribtrary`** -- Enable fuzzing support with [`arbitrary`](https://crates.io/crates/arbitrary) 
+  crate by implementing `Arbitrary` trait.
+
+- **`nightly`** -- Enable nightly-only features (currently `loongarch64` intrinsics).
 
 ### Hardware support
 
@@ -58,10 +61,11 @@ The following list details hardware support for floating point types in this cra
 library, runtime CPU target detection will be used. To get the most performance benefits, compile
 for specific CPU features which avoids the runtime overhead and works in a `no_std` environment.
 
-| Architecture | CPU Target Feature | Notes |
-| ------------ | ------------------ | ----- |
-| `x86`/`x86_64` | `f16c` | This supports conversion to/from `f16` only (including vector SIMD) and does not support any `bf16` or arithmetic operations. |
-| `aarch64` | `fp16` | This supports all operations on `f16` only. |
+| Architecture | CPU Target Feature | Notes                                                                                                                                                  |
+| ------------ | ------------------ |--------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `x86`/`x86_64` | `f16c` | This supports conversion to/from `f16` only (including vector SIMD) and does not support any `bf16` or arithmetic operations.                          |
+| `aarch64` | `fp16` | This supports all operations on `f16` only.                                                                                                            |
+| `loongarch64` | `lsx` | (`nightly` feature only) This supports conversion to/from `f16` only (including vector SIMD) and does not support any `bf16` or arithmetic operations. |
 
 ### More Documentation
 
@@ -70,19 +74,14 @@ for specific CPU features which avoids the runtime overhead and works in a `no_s
 
 ## License
 
-This library is distributed under the terms of either of:
+All files in this library are dual-licensed and distributed under the terms of either of:
 
-* [MIT License](LICENSES/MIT.txt)
+* [MIT License](LICENSE-MIT)
   ([http://opensource.org/licenses/MIT](http://opensource.org/licenses/MIT))
-* [Apache License, Version 2.0](LICENSES/Apache-2.0.txt)
+* [Apache License, Version 2.0](LICENSE-APACHE)
   ([http://www.apache.org/licenses/LICENSE-2.0](http://www.apache.org/licenses/LICENSE-2.0))
 
 at your option.
-
-This project is [REUSE-compliant](https://reuse.software/spec/). Copyrights are retained by their
-contributors. Some files may include explicit copyright notices and/or license
-[SPDX identifiers](https://spdx.dev/ids/). For full authorship information, see the version control
-history.
 
 ### Contributing
 

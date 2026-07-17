@@ -1,10 +1,14 @@
-use crate::error::Result;
-use crate::measurement::ValueFormatter;
-use crate::report::{BenchmarkId, MeasurementData, Report, ReportContext};
-use crate::Throughput;
-use csv::Writer;
-use std::io::Write;
-use std::path::Path;
+use {
+    crate::{
+        error::Result,
+        measurement::ValueFormatter,
+        report::{BenchmarkId, MeasurementData, Report, ReportContext},
+        Throughput,
+    },
+    csv::Writer,
+    serde::Serialize,
+    std::{io::Write, path::Path},
+};
 
 #[derive(Serialize)]
 struct CsvRow<'a> {
@@ -37,11 +41,16 @@ impl<W: Write> CsvReportWriter<W> {
             Some(Throughput::Bytes(bytes)) => (Some(format!("{}", bytes)), Some("bytes")),
             Some(Throughput::BytesDecimal(bytes)) => (Some(format!("{}", bytes)), Some("bytes")),
             Some(Throughput::Elements(elems)) => (Some(format!("{}", elems)), Some("elements")),
+            Some(Throughput::ElementsAndBytes { elements, bytes }) => (
+                Some(format!("{}/{}", elements, bytes)),
+                Some("elements/bytes"),
+            ),
+            Some(Throughput::Bits(bits)) => (Some(format!("{}", bits)), Some("bits")),
             None => (None, None),
         };
         let throughput_num = throughput_num.as_deref();
 
-        for (count, measured_value) in data.iter_counts().iter().zip(data_scaled.into_iter()) {
+        for (count, measured_value) in data.iter_counts().iter().zip(data_scaled) {
             let row = CsvRow {
                 group,
                 function,

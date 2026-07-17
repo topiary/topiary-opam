@@ -3,23 +3,22 @@
 //! Criterion.rs benchmarks with `cargo bench`.
 
 /// Macro used to define a function group for the benchmark harness; see the
-/// `criterion_main!` macro for more details.
+/// [`criterion_main!`](crate::criterion_main) macro for more details.
 ///
 /// This is used to define a function group; a collection of functions to call with a common
 /// Criterion configuration. Accepts two forms which can be seen below.
 ///
-/// Note that the group name given here is not important, it must simply
-/// be unique. Note also that this macro is not related to the `Criterion::benchmark_group` function
-/// or the `BenchmarkGroup` type.
+/// Note that the group name given here is not important, it must simply be
+/// unique. Note also that this macro is not related to the
+/// [`Criterion::benchmark_group`](crate::Criterion::benchmark_group)  function
+/// or the [`BenchmarkGroup`](crate::BenchmarkGroup) type.
 ///
 /// # Examples:
 ///
 /// Complete form:
 ///
 /// ```
-/// # #[macro_use]
-/// # extern crate criterion;
-/// # use criterion::Criterion;
+/// # use criterion::{criterion_group, Criterion};
 /// # fn bench_method1(c: &mut Criterion) {
 /// # }
 /// #
@@ -36,16 +35,14 @@
 /// ```
 ///
 /// In this form, all of the options are clearly spelled out. This expands to
-/// a function named benches, which uses the given config expression to create
-/// an instance of the Criterion struct. This is then passed by mutable
-/// reference to the targets.
+/// a function named `benches`, which uses the given config expression to create
+/// an instance of the [`Criterion`](crate::Criterion) struct. This is then
+/// passed by mutable reference to the targets.
 ///
 /// Compact Form:
 ///
 /// ```
-/// # #[macro_use]
-/// # extern crate criterion;
-/// # use criterion::Criterion;
+/// # use criterion::{criterion_group, Criterion};
 /// # fn bench_method1(c: &mut Criterion) {
 /// # }
 /// #
@@ -64,6 +61,7 @@
 #[macro_export]
 macro_rules! criterion_group {
     (name = $name:ident; config = $config:expr; targets = $( $target:path ),+ $(,)*) => {
+        #[doc="The function which runs the benchmarks."]
         pub fn $name() {
             let mut criterion: $crate::Criterion<_> = $config
                 .configure_from_args();
@@ -99,10 +97,8 @@ macro_rules! criterion_group {
 ///
 /// Since we've disabled the default benchmark harness, we need to add our own:
 ///
-/// ```ignore
-/// #[macro_use]
-/// extern crate criterion;
-/// use criterion::Criterion;
+/// ```no_run
+/// use criterion::{criterion_group, criterion_main, Criterion};
 /// fn bench_method1(c: &mut Criterion) {
 /// }
 ///

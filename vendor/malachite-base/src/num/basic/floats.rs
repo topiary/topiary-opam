@@ -163,6 +163,7 @@ pub trait PrimitiveFloat:
     + PowAssign<i64>
     + PowAssign<Self>
     + PowerOf2<i64>
+    + PowerOf2<u64>
     + PrimeConstant
     + Product
     + RawMantissaAndExponent<u64, u64>
@@ -323,11 +324,7 @@ pub trait PrimitiveFloat:
     /// ```
     #[inline]
     fn abs_negative_zero(self) -> Self {
-        if self == Self::ZERO {
-            Self::ZERO
-        } else {
-            self
-        }
+        if self == Self::ZERO { Self::ZERO } else { self }
     }
 
     /// If `self` is negative zero, replaces it with positive zero; otherwise, leaves `self`

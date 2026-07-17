@@ -41,6 +41,7 @@ macro_rules! allocate {
             target_os = "solaris",
             target_os = "illumos",
             target_os = "haiku",
+            target_os = "hurd",
         ))]
         pub fn allocate(file: &$file, len: u64) -> std::io::Result<()> {
             // No file allocation API available, just set the length if necessary.
@@ -105,6 +106,10 @@ cfg_sync! {
     pub(crate) mod std_impl;
 }
 
-cfg_fs_err! {
-    pub(crate) mod fs_err_impl;
+cfg_fs_err2! {
+    pub(crate) mod fs_err2_impl;
+}
+
+cfg_fs_err3! {
+    pub(crate) mod fs_err3_impl;
 }

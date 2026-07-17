@@ -7,17 +7,13 @@ use std::{collections::HashMap, rc::Rc};
 use crate::{
     eval::cache::{Cache as EvalCache, CacheIndex},
     identifier::LocIdent,
-    mk_uty_enum, mk_uty_record,
     position::{RawSpan, TermPos},
     term::{
         record::{Field, RecordData},
         RichTerm, SealingKey, Term,
     },
     typ::{Type, TypeF},
-    typecheck::{ReifyAsUnifType, UnifType},
 };
-
-use codespan::Files;
 
 pub mod ty_path {
     //! Type paths.
@@ -260,10 +256,10 @@ pub mod ty_path {
 /// but we want to report the failures of the two introduced subcontracts in a different way:
 ///
 ///  - The inner one (on the argument) says that `f` has been misused: it has been applied to
-///  something that is not a `Number`.
+///    something that is not a `Number`.
 ///  - The outer one says that `f` failed to satisfy its contract, as it has been provided with a
-///  `Number` (otherwise the inner contracts would have failed before) but failed to deliver a
-///  `Number`.
+///    `Number` (otherwise the inner contracts would have failed before) but failed to deliver a
+///    `Number`.
 ///
 /// This duality caller/callee or function/context is indicated by the polarity: the outer
 /// corresponds to a *positive* polarity (the contract is on the term), while the inner corresponds
@@ -284,7 +280,7 @@ pub struct Label {
     pub diagnostics: Vec<ContractDiagnostic>,
 
     /// The position of the original contract.
-    pub span: RawSpan,
+    pub span: Option<RawSpan>,
 
     /// The index corresponding to the value being checked. Set at run-time by the interpreter.
     pub arg_idx: Option<CacheIndex>,
@@ -330,17 +326,6 @@ impl From<&TypeVarData> for Term {
     }
 }
 
-impl ReifyAsUnifType for TypeVarData {
-    fn unif_type() -> UnifType {
-        mk_uty_record!(("polarity", Polarity::unif_type()))
-    }
-}
-
-impl ReifyAsUnifType for Polarity {
-    fn unif_type() -> UnifType {
-        mk_uty_enum!("Positive", "Negative")
-    }
-}
 /// A polarity. See [`Label`]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Polarity {
@@ -425,11 +410,6 @@ impl Label {
         Label {
             typ: Rc::new(Type::from(TypeF::Number)),
             diagnostics: vec![ContractDiagnostic::new().with_message(String::from("testing"))],
-            span: RawSpan {
-                src_id: Files::new().add("<test>", String::from("empty")),
-                start: 0.into(),
-                end: 1.into(),
-            },
             polarity: Polarity::Positive,
             ..Default::default()
         }
@@ -522,11 +502,7 @@ impl Default for Label {
     fn default() -> Label {
         Label {
             typ: Rc::new(Type::from(TypeF::Dyn)),
-            span: RawSpan {
-                src_id: Files::new().add("<null>", String::from("")),
-                start: 0.into(),
-                end: 1.into(),
-            },
+            span: None,
             polarity: Polarity::Positive,
             diagnostics: Default::default(),
             arg_idx: Default::default(),
@@ -568,7 +544,7 @@ pub enum MergeKind {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct MergeLabel {
     /// The span of the original merge (which might then decompose into many others).
-    pub span: RawSpan,
+    pub span: Option<RawSpan>,
     pub kind: MergeKind,
 }
 

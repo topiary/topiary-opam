@@ -7,10 +7,10 @@
 // 3 of the License, or (at your option) any later version. See <https://www.gnu.org/licenses/>.
 
 use crate::integer::Integer;
+use crate::natural::Natural;
 use crate::natural::arithmetic::add::limbs_slice_add_limb_in_place;
 use crate::natural::conversion::to_limbs::LimbIterator;
 use crate::natural::logic::not::limbs_not_in_place;
-use crate::natural::Natural;
 use crate::platform::Limb;
 use alloc::vec::Vec;
 use malachite_base::num::arithmetic::traits::{IsPowerOf2, UnsignedAbs};
@@ -108,7 +108,7 @@ struct NLIterator<'a> {
 }
 
 impl NLIterator<'_> {
-    fn get(&self, index: u64) -> Limb {
+    fn get_limb(&self, index: u64) -> Limb {
         let index = usize::exact_from(index);
         if index >= self.limbs.len() {
             // We're indexing into the infinite suffix of Limb::MAXs
@@ -290,22 +290,22 @@ impl TwosComplementLimbIterator<'_> {
     /// use malachite_nz::platform::Limb;
     ///
     /// if Limb::WIDTH == u32::WIDTH {
-    ///     assert_eq!(Integer::ZERO.twos_complement_limbs().get(0), 0);
+    ///     assert_eq!(Integer::ZERO.twos_complement_limbs().get_limb(0), 0);
     ///
     ///     // 2^64 - 10^12 = 4294967063 * 2^32 + 727379968
     ///     let negative_trillion = -Integer::from(10u32).pow(12);
     ///     let limbs = negative_trillion.twos_complement_limbs();
-    ///     assert_eq!(limbs.get(0), 727379968);
-    ///     assert_eq!(limbs.get(1), 4294967063);
-    ///     assert_eq!(limbs.get(2), 4294967295);
-    ///     assert_eq!(limbs.get(100), 4294967295);
+    ///     assert_eq!(limbs.get_limb(0), 727379968);
+    ///     assert_eq!(limbs.get_limb(1), 4294967063);
+    ///     assert_eq!(limbs.get_limb(2), 4294967295);
+    ///     assert_eq!(limbs.get_limb(100), 4294967295);
     /// }
     /// ```
-    pub fn get(&self, index: u64) -> Limb {
-        match *self {
+    pub fn get_limb(&self, index: u64) -> Limb {
+        match self {
             TwosComplementLimbIterator::Zero => 0,
-            TwosComplementLimbIterator::Positive(ref limbs, _) => limbs[usize::exact_from(index)],
-            TwosComplementLimbIterator::Negative(ref limbs, _) => limbs.0.get(index),
+            TwosComplementLimbIterator::Positive(limbs, _) => limbs[usize::exact_from(index)],
+            TwosComplementLimbIterator::Negative(limbs, _) => limbs.0.get_limb(index),
         }
     }
 }
@@ -339,12 +339,12 @@ impl Iterator for TwosComplementLimbIterator<'_> {
     /// }
     /// ```
     fn next(&mut self) -> Option<Limb> {
-        match *self {
+        match self {
             TwosComplementLimbIterator::Zero => None,
-            TwosComplementLimbIterator::Positive(ref mut limbs, ref mut extension_checked) => {
+            TwosComplementLimbIterator::Positive(limbs, extension_checked) => {
                 limbs.iterate_forward(extension_checked)
             }
-            TwosComplementLimbIterator::Negative(ref mut limbs, ref mut extension_checked) => {
+            TwosComplementLimbIterator::Negative(limbs, extension_checked) => {
                 limbs.0.iterate_forward(extension_checked)
             }
         }
@@ -382,12 +382,12 @@ impl DoubleEndedIterator for TwosComplementLimbIterator<'_> {
     /// }
     /// ```
     fn next_back(&mut self) -> Option<Limb> {
-        match *self {
+        match self {
             TwosComplementLimbIterator::Zero => None,
-            TwosComplementLimbIterator::Positive(ref mut limbs, ref mut extension_checked) => {
+            TwosComplementLimbIterator::Positive(limbs, extension_checked) => {
                 limbs.iterate_backward(extension_checked)
             }
-            TwosComplementLimbIterator::Negative(ref mut limbs, ref mut extension_checked) => {
+            TwosComplementLimbIterator::Negative(limbs, extension_checked) => {
                 limbs.0.iterate_backward(extension_checked)
             }
         }

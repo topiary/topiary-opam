@@ -32,7 +32,8 @@ macro_rules! allocate {
             target_os = "dragonfly",
             target_os = "solaris",
             target_os = "illumos",
-            target_os = "haiku"
+            target_os = "haiku",
+            target_os = "hurd",
         ))]
         pub async fn allocate(file: &$file, len: u64) -> std::io::Result<()> {
             // No file allocation API available, just set the length if necessary.
@@ -107,8 +108,12 @@ cfg_async_std! {
     pub(crate) mod async_std_impl;
 }
 
-cfg_fs_err_tokio! {
-    pub(crate) mod fs_err_tokio_impl;
+cfg_fs_err2_tokio! {
+    pub(crate) mod fs_err2_tokio_impl;
+}
+
+cfg_fs_err3_tokio! {
+    pub(crate) mod fs_err3_tokio_impl;
 }
 
 cfg_smol! {

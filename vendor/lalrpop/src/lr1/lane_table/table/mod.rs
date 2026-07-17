@@ -42,8 +42,8 @@ pub struct LaneTable<'grammar> {
     successors: Multimap<StateIndex, Set<StateIndex>>,
 }
 
-impl<'grammar> LaneTable<'grammar> {
-    pub fn new(grammar: &'grammar Grammar, conflicts: usize) -> LaneTable {
+impl LaneTable<'_> {
+    pub fn new(grammar: &Grammar, conflicts: usize) -> LaneTable<'_> {
         LaneTable {
             _grammar: grammar,
             conflicts,
@@ -147,8 +147,8 @@ impl<'grammar> LaneTable<'grammar> {
     }
 }
 
-impl<'grammar> Debug for LaneTable<'grammar> {
-    fn fmt(&self, fmt: &mut Formatter) -> Result<(), Error> {
+impl Debug for LaneTable<'_> {
+    fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
         let indices: Set<StateIndex> = self
             .lookaheads
             .keys()

@@ -55,29 +55,27 @@ fn symbolic_string_prefix_and_length<'input>(
 // please update the [KEYWORDS] array
 /// The tokens in normal mode.
 #[derive(Logos, Debug, PartialEq, Clone)]
+#[logos(skip "((\r\n)+|[ \t\n]+)")]
 pub enum NormalToken<'input> {
-    #[regex("((\r\n)+|[ \t\n]+)", logos::skip)]
     // multiline strings cannot be used as enum tags, so we explicitly
     // disallow that pattern.
     #[regex("'m(%)+\"")]
     // We forbid lone carriage returns for sanity
     #[regex("\r[^\n]")]
-    #[error]
     Error,
 
     // **IMPORTANT**
-    // This regex should be kept in sync with the one for RawEnumTag below.
-    // Also, any change in the lexer regex must also be backported in the LSP's
-    // regex for checking identifiers at ../lsp/nls/src/requests/completion.rs
+    // This regex should be kept in sync with the one for RawEnumTag below, and
+    // also with the identifer regex in `std.package.Manifest`
     #[regex("_*[a-zA-Z][_a-zA-Z0-9-']*")]
     Identifier(&'input str),
-    #[regex("[0-9]*\\.?[0-9]+([eE][+\\-]?[0-9]+)?", |lex| parse_number_sci(lex.slice()))]
+    #[regex("[0-9]*\\.?[0-9]+([eE][+\\-]?[0-9]+)?", |lex| parse_number_sci(lex.slice()).ok())]
     DecNumLiteral(Number),
-    #[regex("0x[A-Fa-f0-9]+", |lex| parse_number_base(16, &lex.slice()[2..]))]
+    #[regex("0x[A-Fa-f0-9]+", |lex| parse_number_base(16, &lex.slice()[2..]).ok())]
     HexNumLiteral(Number),
-    #[regex("0o[0-7]+", |lex| parse_number_base(8, &lex.slice()[2..]))]
+    #[regex("0o[0-7]+", |lex| parse_number_base(8, &lex.slice()[2..]).ok())]
     OctNumLiteral(Number),
-    #[regex("0b[01]+", |lex| parse_number_base(2, &lex.slice()[2..]))]
+    #[regex("0b[01]+", |lex| parse_number_base(2, &lex.slice()[2..]).ok())]
     BinNumLiteral(Number),
 
     // **IMPORTANT**
@@ -125,6 +123,14 @@ pub enum NormalToken<'input> {
     /// identifier because it's not ambiguous) within patterns.
     #[token("or")]
     Or,
+    /// As isn't a reserved keyword. It is a contextual keyword (a keyword that can be used as an
+    /// identifier because it's not ambiguous) within the `import xxx as yyy` construct.
+    #[token("as")]
+    As,
+    /// Include isn't a reserved keyword either. It is a contextual keyword (a keyword that can be
+    /// used as an identifier because it's not ambiguous) within a record literal.
+    #[token("include")]
+    Include,
 
     #[token("?")]
     QuestionMark,
@@ -193,13 +199,19 @@ pub enum NormalToken<'input> {
 
     #[token("%typeof%")]
     Typeof,
+    #[token("%cast%")]
+    Cast,
 
     #[token("%contract/apply%")]
     ContractApply,
+    #[token("%contract/check%")]
+    ContractCheck,
     #[token("%contract/array_lazy_apply%")]
     ContractArrayLazyApp,
     #[token("%contract/record_lazy_apply%")]
     ContractRecordLazyApp,
+    #[token("%contract/custom%")]
+    ContractCustom,
     #[token("%blame%")]
     Blame,
     #[token("%label/flip_polarity%")]
@@ -255,9 +267,25 @@ pub enum NormalToken<'input> {
     RecordFields,
     #[token("%record/fields_with_opts%")]
     RecordFieldsWithOpts,
-
     #[token("%record/values%")]
     RecordValues,
+
+    #[token("%number/arccos%")]
+    NumberArcCos,
+    #[token("%number/arcsin%")]
+    NumberArcSin,
+    #[token("%number/arctan%")]
+    NumberArcTan,
+    #[token("%number/arctan2%")]
+    NumberArcTan2,
+    #[token("%number/cos%")]
+    NumberCos,
+    #[token("%number/sin%")]
+    NumberSin,
+    #[token("%number/tan%")]
+    NumberTan,
+    #[token("%number/log%")]
+    NumberLog,
     #[token("%pow%")]
     Pow,
     #[token("%trace%")]
@@ -281,9 +309,15 @@ pub enum NormalToken<'input> {
     RecordFieldIsDefined,
     #[token("%record/field_is_defined_with_opts%")]
     RecordFieldIsDefinedWithOpts,
+    #[token("%record/split_pair%")]
+    RecordSplitPair,
+    #[token("%record/disjoint_merge%")]
+    RecordDisjointMerge,
+    #[token("%record/merge_contract%")]
+    RecordMergeContract,
+    #[token("%record/freeze%")]
+    RecordFreeze,
 
-    #[token("merge")]
-    Merge,
     #[token("default")]
     Default,
     #[token("doc")]
@@ -315,6 +349,8 @@ pub enum NormalToken<'input> {
     StringLowercase,
     #[token("%string/contains%")]
     StringContains,
+    #[token("%string/compare%")]
+    StringCompare,
     #[token("%string/replace%")]
     StringReplace,
     #[token("%string/replace_regex%")]
@@ -430,7 +466,6 @@ pub struct SymbolicStringStart<'input> {
 pub enum StringToken<'input> {
     // We forbid lone carriage returns for sanity
     #[regex("\r[^\n]")]
-    #[error]
     Error,
 
     #[regex("[^\"%\\\\]+", |lex| normalize_line_endings(lex.slice()))]
@@ -454,7 +489,6 @@ pub enum StringToken<'input> {
 pub enum MultiStringToken<'input> {
     // We forbid lone carriage returns for sanity
     #[regex("\r[^\n]")]
-    #[error]
     Error,
 
     #[regex("[^\"%]+", |lex| normalize_line_endings(lex.slice()))]
@@ -525,13 +559,15 @@ pub enum ModalLexer<'input> {
 
 // Wrap the `next()` function of the underlying lexer.
 impl<'input> Iterator for ModalLexer<'input> {
-    type Item = Token<'input>;
+    type Item = Result<Token<'input>, ()>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
-            ModalLexer::Normal { logos_lexer, .. } => logos_lexer.next().map(Token::Normal),
-            ModalLexer::String { logos_lexer } => logos_lexer.next().map(Token::Str),
-            ModalLexer::MultiString { logos_lexer, .. } => logos_lexer.next().map(Token::MultiStr),
+            ModalLexer::Normal { logos_lexer, .. } => Some(logos_lexer.next()?.map(Token::Normal)),
+            ModalLexer::String { logos_lexer } => Some(logos_lexer.next()?.map(Token::Str)),
+            ModalLexer::MultiString { logos_lexer, .. } => {
+                Some(logos_lexer.next()?.map(Token::MultiStr))
+            }
         }
     }
 }
@@ -764,7 +800,6 @@ impl<'input> Lexer<'input> {
                 // the number of `%`s (plus the opening `"` or `{`) so we
                 // drop the "kind marker" size here (i.e. the `m` character).
                 let size_without_kind_marker = delim_size - 1;
-                // unwrap(): the lexer must always
                 self.enter_indstr(size_without_kind_marker, span.clone())
             }
             NormalToken::LBrace => {
@@ -977,12 +1012,12 @@ impl<'input> Iterator for Lexer<'input> {
     fn next(&mut self) -> Option<Self::Item> {
         match self.lexer.as_mut().unwrap() {
             ModalLexer::Normal { logos_lexer, .. } => {
-                let normal_token = logos_lexer.next()?;
+                let normal_token = logos_lexer.next()?.unwrap_or(NormalToken::Error);
                 let span = logos_lexer.span();
                 self.handle_normal_token(span, normal_token)
             }
             ModalLexer::String { logos_lexer } => {
-                let string_token = logos_lexer.next()?;
+                let string_token = logos_lexer.next()?.unwrap_or(StringToken::Error);
                 let span = logos_lexer.span();
                 self.handle_string_token(span, string_token)
             }
@@ -991,13 +1026,42 @@ impl<'input> Iterator for Lexer<'input> {
                 logos_lexer,
                 ..
             } => {
-                let (multistr_token, span) = buffer
-                    .take()
-                    .or_else(|| Some((logos_lexer.next()?, logos_lexer.span())))?;
+                let (multistr_token, span) = buffer.take().or_else(|| {
+                    Some((
+                        logos_lexer.next()?.unwrap_or(MultiStringToken::Error),
+                        logos_lexer.span(),
+                    ))
+                })?;
 
                 self.handle_multistr_token(span, multistr_token)
             }
         }
+    }
+}
+
+/// Lexer that offsets all the byte indices by a given constant. This is useful when reparsing a
+/// slice of the original input while keeping positions relative to the entire original input.
+pub struct OffsetLexer<'input> {
+    lexer: Lexer<'input>,
+    offset: usize,
+}
+
+impl<'input> OffsetLexer<'input> {
+    pub fn new(s: &'input str, offset: usize) -> Self {
+        OffsetLexer {
+            lexer: Lexer::new(s),
+            offset,
+        }
+    }
+}
+
+impl<'input> Iterator for OffsetLexer<'input> {
+    type Item = Result<SpannedToken<'input>, ParseError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.lexer.next().map(|result| {
+            result.map(|(start, tok, end)| (start + self.offset, tok, end + self.offset))
+        })
     }
 }
 

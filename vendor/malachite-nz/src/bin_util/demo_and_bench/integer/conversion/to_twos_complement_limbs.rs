@@ -9,7 +9,7 @@
 use itertools::Itertools;
 use malachite_base::num::conversion::traits::ExactFrom;
 use malachite_base::test_util::bench::bucketers::vec_len_bucketer;
-use malachite_base::test_util::bench::{run_benchmark, BenchmarkType};
+use malachite_base::test_util::bench::{BenchmarkType, run_benchmark};
 use malachite_base::test_util::generators::common::{GenConfig, GenMode};
 use malachite_base::test_util::generators::{unsigned_vec_gen, unsigned_vec_gen_var_2};
 use malachite_base::test_util::runner::Runner;
@@ -40,7 +40,7 @@ pub(crate) fn register(runner: &mut Runner) {
     register_demo!(runner, demo_integer_into_twos_complement_limbs_desc);
     register_demo!(runner, demo_integer_twos_complement_limbs);
     register_demo!(runner, demo_integer_twos_complement_limbs_rev);
-    register_demo!(runner, demo_integer_twos_complement_limbs_get);
+    register_demo!(runner, demo_integer_twos_complement_limbs_get_limb);
     register_demo!(runner, demo_integer_twos_complement_limb_count);
 
     register_bench!(runner, benchmark_limbs_twos_complement);
@@ -63,7 +63,7 @@ pub(crate) fn register(runner: &mut Runner) {
     );
     register_bench!(
         runner,
-        benchmark_integer_twos_complement_limbs_get_algorithms
+        benchmark_integer_twos_complement_limbs_get_limb_algorithms
     );
     register_bench!(runner, benchmark_integer_twos_complement_limb_count);
 }
@@ -177,16 +177,16 @@ fn demo_integer_twos_complement_limbs_rev(gm: GenMode, config: &GenConfig, limit
     }
 }
 
-fn demo_integer_twos_complement_limbs_get(gm: GenMode, config: &GenConfig, limit: usize) {
+fn demo_integer_twos_complement_limbs_get_limb(gm: GenMode, config: &GenConfig, limit: usize) {
     for (n, i) in integer_unsigned_pair_gen_var_2()
         .get(gm, config)
         .take(limit)
     {
         println!(
-            "twos_complement_limbs({}).get({}) = {:?}",
+            "twos_complement_limbs({}).get_limb({}) = {:?}",
             n,
             i,
-            n.twos_complement_limbs().get(i)
+            n.twos_complement_limbs().get_limb(i)
         );
     }
 }
@@ -339,14 +339,14 @@ fn benchmark_integer_to_twos_complement_limbs_desc_evaluation_strategy(
     );
 }
 
-fn benchmark_integer_twos_complement_limbs_get_algorithms(
+fn benchmark_integer_twos_complement_limbs_get_limb_algorithms(
     gm: GenMode,
     config: &GenConfig,
     limit: usize,
     file_name: &str,
 ) {
     run_benchmark(
-        "Integer.twos_complement_limbs().get()",
+        "Integer.twos_complement_limbs().get_limb()",
         BenchmarkType::Algorithms,
         integer_unsigned_pair_gen_var_2().get(gm, config),
         gm.name(),
@@ -354,9 +354,10 @@ fn benchmark_integer_twos_complement_limbs_get_algorithms(
         file_name,
         &pair_1_integer_bit_bucketer("n"),
         &mut [
-            ("Integer.twos_complement_limbs().get(u)", &mut |(n, u)| {
-                no_out!(n.twos_complement_limbs().get(u))
-            }),
+            (
+                "Integer.twos_complement_limbs().get_limb(u)",
+                &mut |(n, u)| no_out!(n.twos_complement_limbs().get_limb(u)),
+            ),
             (
                 "Integer.into_twos_complement_limbs_asc()[u]",
                 &mut |(n, u)| {
@@ -364,11 +365,7 @@ fn benchmark_integer_twos_complement_limbs_get_algorithms(
                     let non_negative = n >= 0;
                     let limbs = n.into_twos_complement_limbs_asc();
                     if u >= limbs.len() {
-                        if non_negative {
-                            0
-                        } else {
-                            Limb::MAX
-                        }
+                        if non_negative { 0 } else { Limb::MAX }
                     } else {
                         limbs[u]
                     };
@@ -392,9 +389,8 @@ fn benchmark_integer_twos_complement_limb_count(
         limit,
         file_name,
         &integer_bit_bucketer("n"),
-        &mut [(
-            "Malachite",
-            &mut |n| no_out!(n.twos_complement_limb_count()),
-        )],
+        &mut [("Malachite", &mut |n| {
+            no_out!(n.twos_complement_limb_count())
+        })],
     );
 }

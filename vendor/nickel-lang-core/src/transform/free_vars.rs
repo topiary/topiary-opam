@@ -7,8 +7,8 @@ use crate::{
     identifier::Ident,
     term::pattern::*,
     term::{
-        record::{Field, FieldDeps, RecordDeps},
-        IndexMap, MatchBranch, RichTerm, SharedTerm, StrChunk, Term,
+        record::{Field, FieldDeps, Include, RecordDeps},
+        IndexMap, MatchBranch, RichTerm, SharedTerm, StrChunk, Term, TypeAnnotation,
     },
     typ::{RecordRowF, RecordRows, RecordRowsF, Type, TypeF},
 };
@@ -42,7 +42,7 @@ impl CollectFreeVars for RichTerm {
             | Term::ForeignId(_)
             | Term::SealingKey(_)
             | Term::Enum(_)
-            | Term::Import(_)
+            | Term::Import { .. }
             | Term::ResolvedImport(_) => (),
             Term::Fun(id, t) => {
                 let mut fresh = HashSet::new();
@@ -60,26 +60,39 @@ impl CollectFreeVars for RichTerm {
 
                 free_vars.extend(fresh);
             }
-            Term::Let(id, t1, t2, attrs) => {
+            Term::Let(bindings, body, attrs) => {
                 let mut fresh = HashSet::new();
 
-                if attrs.rec {
-                    t1.collect_free_vars(&mut fresh);
-                } else {
-                    t1.collect_free_vars(free_vars);
+                for (_id, rt) in bindings.iter_mut() {
+                    if attrs.rec {
+                        rt.collect_free_vars(&mut fresh);
+                    } else {
+                        rt.collect_free_vars(free_vars);
+                    }
                 }
 
-                t2.collect_free_vars(&mut fresh);
-                fresh.remove(&id.ident());
+                body.collect_free_vars(&mut fresh);
+                for (id, _rt) in bindings {
+                    fresh.remove(&id.ident());
+                }
 
                 free_vars.extend(fresh);
             }
-            Term::LetPattern(pat, t1, t2) => {
+            Term::LetPattern(bindings, body, attrs) => {
                 let mut fresh = HashSet::new();
 
-                t1.collect_free_vars(free_vars);
-                t2.collect_free_vars(&mut fresh);
-                pat.remove_bindings(&mut fresh);
+                for (_pat, rt) in bindings.iter_mut() {
+                    if attrs.rec {
+                        rt.collect_free_vars(&mut fresh);
+                    } else {
+                        rt.collect_free_vars(free_vars);
+                    }
+                }
+
+                body.collect_free_vars(&mut fresh);
+                for (pat, _rt) in bindings {
+                    pat.remove_bindings(&mut fresh);
+                }
 
                 free_vars.extend(fresh);
             }
@@ -106,9 +119,10 @@ impl CollectFreeVars for RichTerm {
                     free_vars.extend(fresh);
                 }
             }
-            Term::Op1(_, t) | Term::Sealed(_, t, _) | Term::EnumVariant { arg: t, .. } => {
-                t.collect_free_vars(free_vars)
-            }
+            Term::Op1(_, t)
+            | Term::Sealed(_, t, _)
+            | Term::EnumVariant { arg: t, .. }
+            | Term::CustomContract(t) => t.collect_free_vars(free_vars),
             Term::OpN(_, ts) => {
                 for t in ts {
                     t.collect_free_vars(free_vars);
@@ -119,14 +133,31 @@ impl CollectFreeVars for RichTerm {
                     t.collect_free_vars(free_vars);
                 }
             }
-            Term::RecRecord(record, dyn_fields, deps) => {
-                let rec_fields: HashSet<Ident> =
+            Term::RecRecord(record, includes, dyn_fields, deps) => {
+                let mut rec_fields: HashSet<Ident> =
                     record.fields.keys().map(|id| id.ident()).collect();
+                // `{include foo, [..]}` is defined to have the semantics of `let foo_ = foo in
+                // {foo = foo_, [..]}`, hence an included field also counts as a recursive field.
+                rec_fields.extend(includes.iter().map(|incl| incl.ident.ident()));
+
                 let mut fresh = HashSet::new();
                 let mut new_deps = RecordDeps {
-                    stat_fields: IndexMap::with_capacity(record.fields.len()),
+                    stat_fields: IndexMap::with_capacity(record.fields.len() + includes.len()),
                     dyn_fields: Vec::with_capacity(dyn_fields.len()),
                 };
+
+                for incl in includes.iter_mut() {
+                    fresh.clear();
+
+                    incl.collect_free_vars(&mut fresh);
+
+                    new_deps
+                        .stat_fields
+                        .insert(incl.ident.ident(), FieldDeps::from(&fresh & &rec_fields));
+
+                    free_vars.extend(&fresh - &rec_fields);
+                    free_vars.insert(incl.ident.ident());
+                }
 
                 for (id, t) in record.fields.iter_mut() {
                     fresh.clear();
@@ -138,12 +169,13 @@ impl CollectFreeVars for RichTerm {
 
                     free_vars.extend(&fresh - &rec_fields);
                 }
+
                 for (t1, t2) in dyn_fields.iter_mut() {
                     fresh.clear();
 
-                    // Currently, the identifier part of a dynamic definition is not recursive, i.e.
-                    // one can't write `{foo = "hey", "%{foo}" = 5}`. Hence, we add their free
-                    // variables directly in the final set without taking them into account for
+                    // Currently, the identifier part of a dynamic definition is not recursive,
+                    // i.e. one can't write `{foo = "hey", "%{foo}" = 5}`. Hence, we add their free
+                    // variables directly to the final set without taking them into account for
                     // recursive dependencies.
                     t1.collect_free_vars(free_vars);
                     t2.collect_free_vars(&mut fresh);
@@ -155,13 +187,13 @@ impl CollectFreeVars for RichTerm {
                 }
 
                 // Even if deps were previously filled (it shouldn't), we had to recompute the free
-                // variables anyway for the nodes higher up, because deps alone is not sufficient to
-                // reconstruct the full set of free variables. At this point, we override it in any
-                // case.
+                // variables anyway for the nodes higher up, because `deps` alone is not sufficient
+                // to reconstruct the full set of free variables. At this point, we override it in
+                // any case.
                 *deps = Some(new_deps);
             }
             Term::Array(ts, _) => {
-                for t in ts.make_mut().iter_mut() {
+                for t in ts {
                     t.collect_free_vars(free_vars);
                 }
             }
@@ -179,8 +211,9 @@ impl CollectFreeVars for RichTerm {
 
                 t.collect_free_vars(free_vars);
             }
-            Term::Type(ty) => {
-                ty.collect_free_vars(free_vars);
+            Term::Type { typ, contract } => {
+                typ.collect_free_vars(free_vars);
+                contract.collect_free_vars(free_vars);
             }
             Term::Closure(_) => {
                 unreachable!("should never see closures at the transformation stage");
@@ -212,7 +245,7 @@ impl CollectFreeVars for Type {
                 ty1.as_mut().collect_free_vars(set);
                 ty2.as_mut().collect_free_vars(set);
             }
-            TypeF::Flat(ref mut rt) => rt.collect_free_vars(set),
+            TypeF::Contract(ref mut rt) => rt.collect_free_vars(set),
         }
     }
 }
@@ -232,6 +265,14 @@ impl CollectFreeVars for RecordRows {
     }
 }
 
+impl CollectFreeVars for TypeAnnotation {
+    fn collect_free_vars(&mut self, set: &mut HashSet<Ident>) {
+        for labeled_ty in self.iter_mut() {
+            labeled_ty.typ.collect_free_vars(set);
+        }
+    }
+}
+
 impl CollectFreeVars for Field {
     fn collect_free_vars(&mut self, set: &mut HashSet<Ident>) {
         for labeled_ty in self.metadata.annotation.iter_mut() {
@@ -241,6 +282,12 @@ impl CollectFreeVars for Field {
         if let Some(ref mut value) = self.value {
             value.collect_free_vars(set);
         }
+    }
+}
+
+impl CollectFreeVars for Include {
+    fn collect_free_vars(&mut self, set: &mut HashSet<Ident>) {
+        self.metadata.annotation.collect_free_vars(set);
     }
 }
 

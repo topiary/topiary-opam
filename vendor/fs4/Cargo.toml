@@ -13,12 +13,13 @@
 edition = "2021"
 rust-version = "1.75.0"
 name = "fs4"
-version = "0.9.1"
+version = "0.12.0"
 authors = [
     "Dan Burkert <dan@danburkert.com>",
     "Al Liu <scygliu1@gmail.com>",
 ]
 build = false
+autolib = false
 autobins = false
 autoexamples = false
 autotests = false
@@ -56,9 +57,15 @@ path = "src/lib.rs"
 version = "1"
 optional = true
 
-[dependencies.fs-err]
+[dependencies.fs-err2]
 version = "2"
 optional = true
+package = "fs-err"
+
+[dependencies.fs-err3]
+version = "3"
+optional = true
+package = "fs-err"
 
 [dependencies.smol]
 version = "2"
@@ -74,12 +81,18 @@ default-features = false
 version = "1"
 features = ["attributes"]
 
-[dev-dependencies.fs-err]
+[dev-dependencies.fs-err2]
 version = "2"
 features = [
     "io_safety",
     "tokio",
 ]
+package = "fs-err"
+
+[dev-dependencies.fs-err3]
+version = "3"
+features = ["tokio"]
+package = "fs-err"
 
 [dev-dependencies.libc]
 version = "0.2"
@@ -97,13 +110,18 @@ features = ["full"]
 [features]
 async-std = ["dep:async-std"]
 default = ["sync"]
-fs-err = [
-    "dep:fs-err",
-    "fs-err/io_safety",
+fs-err2 = [
+    "dep:fs-err2",
+    "fs-err2/io_safety",
 ]
-fs-err-tokio = [
-    "fs-err",
-    "fs-err/tokio",
+fs-err2-tokio = [
+    "fs-err2",
+    "fs-err2/tokio",
+]
+fs-err3 = ["dep:fs-err3"]
+fs-err3-tokio = [
+    "fs-err3",
+    "fs-err3/tokio",
 ]
 smol = ["dep:smol"]
 sync = []

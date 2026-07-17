@@ -1,6 +1,5 @@
 use std::ops::{Deref, DerefMut};
 
-use malachite::Rational;
 use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -39,6 +38,12 @@ impl From<NickelString> for Ident {
 impl From<NickelString> for LocIdent {
     fn from(s: NickelString) -> Self {
         LocIdent::from(s.0)
+    }
+}
+
+impl<'a> From<&'a NickelString> for LocIdent {
+    fn from(s: &'a NickelString) -> Self {
+        LocIdent::from(s.0.as_str())
     }
 }
 
@@ -316,7 +321,7 @@ impl NickelString {
             let groups = capt
                 .iter()
                 .skip(1)
-                .filter_map(|s_opt| s_opt.map(|s| s.as_str().into()))
+                .map(|s_opt| s_opt.map(|s| s.as_str().into()))
                 .collect();
 
             // The indices returned by the `regex` crate are byte offsets into
@@ -357,20 +362,23 @@ impl Default for NickelString {
 pub struct RegexFindResult {
     pub matched: NickelString,
     pub index: Number,
-    pub groups: Vec<NickelString>,
+    /// If a capture group didn't match, we store a `None`. This `None` placeholders
+    /// make the indexing predictable, so it's possible to associate captures with
+    /// parenthesis groupings in the original regex.
+    pub groups: Vec<Option<NickelString>>,
 }
 
 /// Errors returned by `NickelString`'s `substring` method.
 pub enum SubstringError {
     /// The start index was not an int
-    NonIntStart(Rational),
+    NonIntStart(Number),
     /// The end index was not an int
-    NonIntEnd(Rational),
+    NonIntEnd(Number),
     /// The start index was not within the bounds of the string
-    StartOutOfBounds { start: Rational, str_len: usize },
+    StartOutOfBounds { start: Number, str_len: usize },
     EndOutOfBounds {
-        start: Rational,
-        end: Rational,
+        start: Number,
+        end: Number,
         str_len: usize,
     },
 }
@@ -573,9 +581,7 @@ mod grapheme_cluster_preservation {
         ) -> impl Iterator<Item = regex::Captures<'a>> {
             needle.captures_iter(haystack).filter(|c| {
                 c.iter().all(|maybe_match| {
-                    maybe_match
-                        .map(|m| does_match_start_and_end_on_boundary(haystack, &m))
-                        .unwrap_or(false)
+                    maybe_match.is_none_or(|m| does_match_start_and_end_on_boundary(haystack, &m))
                 })
             })
         }

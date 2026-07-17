@@ -2,7 +2,7 @@
 //!
 //! This crate allows you to parse and modify toml
 //! documents, while preserving comments, spaces *and
-//! relative order* or items.
+//! relative order* of items.
 //!
 //! If you also need the ease of a more traditional API, see the [`toml`] crate.
 //!
@@ -71,7 +71,7 @@
 
 // https://github.com/Marwes/combine/issues/172
 #![recursion_limit = "256"]
-#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![warn(missing_docs)]
 #![warn(clippy::print_stderr)]
 #![warn(clippy::print_stdout)]
@@ -84,7 +84,6 @@ mod encode;
 mod error;
 mod index;
 mod inline_table;
-mod internal_string;
 mod item;
 mod key;
 #[cfg(feature = "parse")]
@@ -106,17 +105,16 @@ pub use crate::array::{Array, ArrayIntoIter, ArrayIter, ArrayIterMut};
 pub use crate::array_of_tables::{
     ArrayOfTables, ArrayOfTablesIntoIter, ArrayOfTablesIter, ArrayOfTablesIterMut,
 };
-/// Deprecated, replaced with [`DocumentMut`]
-#[deprecated(since = "0.22.6", note = "Replaced with `DocumentMut`")]
-pub type Document = DocumentMut;
 pub use crate::document::DocumentMut;
-pub use crate::document::ImDocument;
+/// Type representing a parsed TOML document
+#[deprecated(since = "0.23.0", note = "Replaced with `Document`")]
+pub type ImDocument<S> = Document<S>;
+pub use crate::document::Document;
 pub use crate::error::TomlError;
 pub use crate::inline_table::{
     InlineEntry, InlineOccupiedEntry, InlineTable, InlineTableIntoIter, InlineTableIter,
     InlineTableIterMut, InlineVacantEntry,
 };
-pub use crate::internal_string::InternalString;
 pub use crate::item::{array, table, value, Item};
 pub use crate::key::{Key, KeyMut};
 pub use crate::raw_string::RawString;
@@ -137,7 +135,13 @@ pub(crate) mod private {
     impl Sealed for f64 {}
     impl Sealed for bool {}
     impl Sealed for crate::Datetime {}
-    impl<'a, T: ?Sized> Sealed for &'a T where T: Sealed {}
+    impl<T: ?Sized> Sealed for &T where T: Sealed {}
     impl Sealed for crate::Table {}
     impl Sealed for crate::InlineTable {}
 }
+
+#[doc = include_str!("../README.md")]
+#[cfg(doctest)]
+#[cfg(feature = "display")]
+#[cfg(feature = "parse")]
+pub struct ReadmeDoctests;

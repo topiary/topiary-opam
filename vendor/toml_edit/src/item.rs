@@ -23,7 +23,7 @@ pub enum Item {
 impl Item {
     /// Sets `self` to the given item if `self` is none and
     /// returns a mutable reference to `self`.
-    pub fn or_insert(&mut self, item: Item) -> &mut Item {
+    pub fn or_insert(&mut self, item: Self) -> &mut Self {
         if self.is_none() {
             *self = item;
         }
@@ -37,10 +37,10 @@ impl Item {
     /// Text description of value type
     pub fn type_name(&self) -> &'static str {
         match self {
-            Item::None => "none",
-            Item::Value(v) => v.type_name(),
-            Item::Table(..) => "table",
-            Item::ArrayOfTables(..) => "array of tables",
+            Self::None => "none",
+            Self::Value(v) => v.type_name(),
+            Self::Table(..) => "table",
+            Self::ArrayOfTables(..) => "array of tables",
         }
     }
 
@@ -54,7 +54,7 @@ impl Item {
     ///   number.
     /// - The given key does not exist in the map
     ///   or the given index is not within the bounds of the array.
-    pub fn get<I: crate::index::Index>(&self, index: I) -> Option<&Item> {
+    pub fn get<I: crate::index::Index>(&self, index: I) -> Option<&Self> {
         index.index(self)
     }
 
@@ -68,62 +68,74 @@ impl Item {
     ///   number.
     /// - The given key does not exist in the map
     ///   or the given index is not within the bounds of the array.
-    pub fn get_mut<I: crate::index::Index>(&mut self, index: I) -> Option<&mut Item> {
+    pub fn get_mut<I: crate::index::Index>(&mut self, index: I) -> Option<&mut Self> {
         index.index_mut(self)
     }
 
-    /// Casts `self` to value.
+    /// Casts `self` to [`Value`]
     pub fn as_value(&self) -> Option<&Value> {
         match *self {
-            Item::Value(ref v) => Some(v),
+            Self::Value(ref v) => Some(v),
             _ => None,
         }
     }
-    /// Casts `self` to table.
+    /// Casts `self` to [`Table`]
+    ///
+    /// <div class="warning">
+    ///
+    /// To operate on both [`Table`]s and [`InlineTable`]s, see [`Item::as_table_like`]
+    ///
+    /// </div>
     pub fn as_table(&self) -> Option<&Table> {
         match *self {
-            Item::Table(ref t) => Some(t),
+            Self::Table(ref t) => Some(t),
             _ => None,
         }
     }
-    /// Casts `self` to array of tables.
+    /// Casts `self` to [`ArrayOfTables`]
     pub fn as_array_of_tables(&self) -> Option<&ArrayOfTables> {
         match *self {
-            Item::ArrayOfTables(ref a) => Some(a),
+            Self::ArrayOfTables(ref a) => Some(a),
             _ => None,
         }
     }
-    /// Casts `self` to mutable value.
+    /// Casts `self` to mutable [`Value`].
     pub fn as_value_mut(&mut self) -> Option<&mut Value> {
         match *self {
-            Item::Value(ref mut v) => Some(v),
+            Self::Value(ref mut v) => Some(v),
             _ => None,
         }
     }
-    /// Casts `self` to mutable table.
+    /// Casts `self` to mutable [`Table`]
+    ///
+    /// <div class="warning">
+    ///
+    /// To operate on both [`Table`]s and [`InlineTable`]s, see [`Item::as_table_like_mut`]
+    ///
+    /// </div>
     pub fn as_table_mut(&mut self) -> Option<&mut Table> {
         match *self {
-            Item::Table(ref mut t) => Some(t),
+            Self::Table(ref mut t) => Some(t),
             _ => None,
         }
     }
-    /// Casts `self` to mutable array of tables.
+    /// Casts `self` to mutable [`ArrayOfTables`]
     pub fn as_array_of_tables_mut(&mut self) -> Option<&mut ArrayOfTables> {
         match *self {
-            Item::ArrayOfTables(ref mut a) => Some(a),
+            Self::ArrayOfTables(ref mut a) => Some(a),
             _ => None,
         }
     }
-    /// Casts `self` to value.
+    /// Casts `self` to [`Value`]
     pub fn into_value(self) -> Result<Value, Self> {
         match self {
-            Item::None => Err(self),
-            Item::Value(v) => Ok(v),
-            Item::Table(v) => {
+            Self::None => Err(self),
+            Self::Value(v) => Ok(v),
+            Self::Table(v) => {
                 let v = v.into_inline_table();
                 Ok(Value::InlineTable(v))
             }
-            Item::ArrayOfTables(v) => {
+            Self::ArrayOfTables(v) => {
                 let v = v.into_array();
                 Ok(Value::Array(v))
             }
@@ -132,24 +144,30 @@ impl Item {
     /// In-place convert to a value
     pub fn make_value(&mut self) {
         let other = std::mem::take(self);
-        let other = other.into_value().map(Item::Value).unwrap_or(Item::None);
+        let other = other.into_value().map(Item::Value).unwrap_or(Self::None);
         *self = other;
     }
-    /// Casts `self` to table.
+    /// Casts `self` to [`Table`]
+    ///
+    /// <div class="warning">
+    ///
+    /// This does not include [`InlineTable`]s
+    ///
+    /// </div>
     pub fn into_table(self) -> Result<Table, Self> {
         match self {
-            Item::Table(t) => Ok(t),
-            Item::Value(Value::InlineTable(t)) => Ok(t.into_table()),
+            Self::Table(t) => Ok(t),
+            Self::Value(Value::InlineTable(t)) => Ok(t.into_table()),
             _ => Err(self),
         }
     }
-    /// Casts `self` to array of tables.
+    /// Casts `self` to [`ArrayOfTables`]
     pub fn into_array_of_tables(self) -> Result<ArrayOfTables, Self> {
         match self {
-            Item::ArrayOfTables(a) => Ok(a),
-            Item::Value(Value::Array(a)) => {
+            Self::ArrayOfTables(a) => Ok(a),
+            Self::Value(Value::Array(a)) => {
                 if a.is_empty() {
-                    Err(Item::Value(Value::Array(a)))
+                    Err(Self::Value(Value::Array(a)))
                 } else if a.iter().all(|v| v.is_inline_table()) {
                     let mut aot = ArrayOfTables::new();
                     aot.values = a.values;
@@ -158,7 +176,7 @@ impl Item {
                     }
                     Ok(aot)
                 } else {
-                    Err(Item::Value(Value::Array(a)))
+                    Err(Self::Value(Value::Array(a)))
                 }
             }
             _ => Err(self),
@@ -177,21 +195,27 @@ impl Item {
         };
         *self = other;
     }
-    /// Returns true if `self` is a value.
+    /// Returns true if `self` is a [`Value`]
     pub fn is_value(&self) -> bool {
         self.as_value().is_some()
     }
-    /// Returns true if `self` is a table.
+    /// Returns true if `self` is a [`Table`]
+    ///
+    /// <div class="warning">
+    ///
+    /// To operate on both [`Table`]s and [`InlineTable`]s, see [`Item::is_table_like`]
+    ///
+    /// </div>
     pub fn is_table(&self) -> bool {
         self.as_table().is_some()
     }
-    /// Returns true if `self` is an array of tables.
+    /// Returns true if `self` is an [`ArrayOfTables`]
     pub fn is_array_of_tables(&self) -> bool {
         self.as_array_of_tables().is_some()
     }
     /// Returns true if `self` is `None`.
     pub fn is_none(&self) -> bool {
-        matches!(*self, Item::None)
+        matches!(*self, Self::None)
     }
 
     // Duplicate Value downcasting API
@@ -286,8 +310,8 @@ impl Item {
     /// Casts `self` to either a table or an inline table.
     pub fn as_table_like_mut(&mut self) -> Option<&mut dyn TableLike> {
         match self {
-            Item::Table(t) => Some(t as &mut dyn TableLike),
-            Item::Value(Value::InlineTable(t)) => Some(t as &mut dyn TableLike),
+            Self::Table(t) => Some(t as &mut dyn TableLike),
+            Self::Value(Value::InlineTable(t)) => Some(t as &mut dyn TableLike),
             _ => None,
         }
     }
@@ -299,22 +323,22 @@ impl Item {
 
     /// The location within the original document
     ///
-    /// This generally requires an [`ImDocument`][crate::ImDocument].
+    /// This generally requires a [`Document`][crate::Document].
     pub fn span(&self) -> Option<std::ops::Range<usize>> {
         match self {
-            Item::None => None,
-            Item::Value(v) => v.span(),
-            Item::Table(v) => v.span(),
-            Item::ArrayOfTables(v) => v.span(),
+            Self::None => None,
+            Self::Value(v) => v.span(),
+            Self::Table(v) => v.span(),
+            Self::ArrayOfTables(v) => v.span(),
         }
     }
 
     pub(crate) fn despan(&mut self, input: &str) {
         match self {
-            Item::None => {}
-            Item::Value(v) => v.despan(input),
-            Item::Table(v) => v.despan(input),
-            Item::ArrayOfTables(v) => v.despan(input),
+            Self::None => {}
+            Self::Value(v) => v.despan(input),
+            Self::Table(v) => v.despan(input),
+            Self::ArrayOfTables(v) => v.despan(input),
         }
     }
 }
@@ -323,10 +347,10 @@ impl Clone for Item {
     #[inline(never)]
     fn clone(&self) -> Self {
         match self {
-            Item::None => Item::None,
-            Item::Value(v) => Item::Value(v.clone()),
-            Item::Table(v) => Item::Table(v.clone()),
-            Item::ArrayOfTables(v) => Item::ArrayOfTables(v.clone()),
+            Self::None => Self::None,
+            Self::Value(v) => Self::Value(v.clone()),
+            Self::Table(v) => Self::Table(v.clone()),
+            Self::ArrayOfTables(v) => Self::ArrayOfTables(v.clone()),
         }
     }
 }
@@ -338,19 +362,31 @@ impl FromStr for Item {
     /// Parses a value from a &str
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let value = s.parse::<Value>()?;
-        Ok(Item::Value(value))
+        Ok(Self::Value(value))
     }
 }
 
-impl<'b> From<&'b Item> for Item {
-    fn from(s: &'b Item) -> Self {
+impl<'b> From<&'b Self> for Item {
+    fn from(s: &'b Self) -> Self {
         s.clone()
+    }
+}
+
+impl From<Table> for Item {
+    fn from(s: Table) -> Self {
+        Self::Table(s)
+    }
+}
+
+impl From<ArrayOfTables> for Item {
+    fn from(s: ArrayOfTables) -> Self {
+        Self::ArrayOfTables(s)
     }
 }
 
 impl<V: Into<Value>> From<V> for Item {
     fn from(s: V) -> Self {
-        Item::Value(s.into())
+        Self::Value(s.into())
     }
 }
 
@@ -358,10 +394,10 @@ impl<V: Into<Value>> From<V> for Item {
 impl std::fmt::Display for Item {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self {
-            Item::None => Ok(()),
-            Item::Value(v) => v.fmt(f),
-            Item::Table(v) => v.fmt(f),
-            Item::ArrayOfTables(v) => v.fmt(f),
+            Self::None => Ok(()),
+            Self::Value(v) => v.fmt(f),
+            Self::Table(v) => v.fmt(f),
+            Self::ArrayOfTables(v) => v.fmt(f),
         }
     }
 }

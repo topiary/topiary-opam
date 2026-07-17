@@ -11,10 +11,17 @@
 
 [package]
 edition = "2021"
+rust-version = "1.85"
 name = "nickel-lang-core"
-version = "0.8.0"
+version = "0.15.3"
 authors = ["The Nickel Team <nickel-lang@protonmail.com>"]
+build = "build.rs"
 links = "nix"
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
 description = "Programmable configuration files."
 homepage = "https://nickel-lang.org"
 readme = "README.md"
@@ -27,212 +34,9 @@ keywords = [
 license = "MIT"
 repository = "https://github.com/tweag/nickel"
 
-[lib]
-bench = false
-
-[[bench]]
-name = "numeric"
-harness = false
-
-[[bench]]
-name = "functions"
-harness = false
-
-[[bench]]
-name = "arrays"
-harness = false
-
-[[bench]]
-name = "serialization"
-harness = false
-
-[[bench]]
-name = "mantis"
-harness = false
-
-[[bench]]
-name = "stdlib"
-harness = false
-
-[[bench]]
-name = "typecheck-nixpkgs-lib"
-harness = false
-
-[dependencies.ansi_term]
-version = "0.12"
-optional = true
-
-[dependencies.clap]
-version = "4.3"
-features = ["derive"]
-
-[dependencies.codespan]
-version = "0.11"
-features = ["serialization"]
-
-[dependencies.codespan-reporting]
-version = "0.11"
-features = ["serialization"]
-
-[dependencies.comrak]
-version = "0.17.0"
-features = []
-optional = true
-
-[dependencies.cxx]
-version = "1.0"
-optional = true
-
-[dependencies.indexmap]
-version = "1.9.3"
-features = ["serde"]
-
-[dependencies.indoc]
-version = "2"
-
-[dependencies.js-sys]
-version = "0.3"
-optional = true
-
-[dependencies.lalrpop-util]
-version = "0.20.2"
-
-[dependencies.logos]
-version = "0.12"
-
-[dependencies.malachite]
-version = "0.4"
-features = ["enable_serde"]
-
-[dependencies.malachite-q]
-version = "0.4"
-
-[dependencies.md-5]
-version = "0.10.5"
-
-[dependencies.metrics]
-version = "0.21"
-optional = true
-
-[dependencies.once_cell]
-version = "1.17.1"
-
-[dependencies.pretty]
-version = "0.11.3"
-
-[dependencies.regex]
-version = "1"
-
-[dependencies.rustyline]
-version = "11.0"
-optional = true
-
-[dependencies.rustyline-derive]
-version = "0.8.0"
-optional = true
-
-[dependencies.serde]
-version = "1.0.164"
-features = ["derive"]
-
-[dependencies.serde-wasm-bindgen]
-version = "0.5.0"
-
-[dependencies.serde_json]
-version = "1.0.96"
-
-[dependencies.serde_repr]
-version = "0.1"
-optional = true
-
-[dependencies.serde_yaml]
-version = "0.9.19"
-
-[dependencies.sha-1]
-version = "0.10.0"
-
-[dependencies.sha2]
-version = "0.10.6"
-
-[dependencies.simple-counter]
-version = "0.1.0"
-
-[dependencies.strip-ansi-escapes]
-version = "0.2.0"
-
-[dependencies.strsim]
-version = "0.10.0"
-
-[dependencies.termimad]
-version = "0.23.1"
-optional = true
-
-[dependencies.toml]
-version = "0.7.2"
-features = ["parse"]
-
-[dependencies.topiary-core]
-version = "0.4.0"
-optional = true
-
-[dependencies.topiary-queries]
-version = "0.4.1"
-features = ["nickel"]
-optional = true
-default-features = false
-
-[dependencies.tree-sitter-nickel]
-version = "0.2.0"
-optional = true
-
-[dependencies.typed-arena]
-version = "2.0.2"
-
-[dependencies.unicode-segmentation]
-version = "1.10.1"
-
-[dependencies.void]
-version = "1"
-
-[dependencies.wasm-bindgen]
-version = "=0.2.91"
-features = ["serde-serialize"]
-optional = true
-
-[dev-dependencies.assert_matches]
-version = "1.5.0"
-
-[dev-dependencies.criterion]
-version = "0.4"
-
-[dev-dependencies.pprof]
-version = "0.11.1"
-features = [
-    "criterion",
-    "flamegraph",
-]
-
-[dev-dependencies.pretty_assertions]
-version = "1.3.0"
-
-[dev-dependencies.similar]
-version = "2.2.1"
-
-[dev-dependencies.test-generator]
-version = "0.3.1"
-
-[build-dependencies.cxx-build]
-version = "1.0"
-optional = true
-
-[build-dependencies.lalrpop]
-version = "0.20.2"
-
-[build-dependencies.pkg-config]
-version = "0.3.27"
-optional = true
-
 [features]
+benchmark-ci = []
+clap = ["dep:clap"]
 default = [
     "markdown",
     "repl",
@@ -261,4 +65,252 @@ repl-wasm = [
     "dep:wasm-bindgen",
     "dep:js-sys",
     "dep:serde_repr",
+    "dep:serde-wasm-bindgen",
 ]
+
+[lib]
+name = "nickel_lang_core"
+path = "src/lib.rs"
+bench = false
+
+[[test]]
+name = "examples"
+path = "tests/examples/main.rs"
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
+
+[[test]]
+name = "manual"
+path = "tests/manual/main.rs"
+
+[[bench]]
+name = "arrays"
+path = "benches/arrays.rs"
+harness = false
+
+[[bench]]
+name = "functions"
+path = "benches/functions.rs"
+harness = false
+
+[[bench]]
+name = "mantis"
+path = "benches/mantis.rs"
+harness = false
+
+[[bench]]
+name = "numeric"
+path = "benches/numeric.rs"
+harness = false
+
+[[bench]]
+name = "records"
+path = "benches/records.rs"
+harness = false
+
+[[bench]]
+name = "serialization"
+path = "benches/serialization.rs"
+harness = false
+
+[[bench]]
+name = "stdlib"
+path = "benches/stdlib.rs"
+harness = false
+
+[[bench]]
+name = "typecheck-nixpkgs-lib"
+path = "benches/typecheck-nixpkgs-lib.rs"
+harness = false
+
+[dependencies.ansi_term]
+version = "0.12"
+optional = true
+
+[dependencies.bumpalo]
+version = "3.17.0"
+
+[dependencies.clap]
+version = "4.5"
+features = ["derive"]
+optional = true
+
+[dependencies.codespan]
+version = "0.12"
+features = ["serialization"]
+
+[dependencies.codespan-reporting]
+version = "0.12"
+features = ["serialization"]
+
+[dependencies.colorchoice]
+version = "1.0"
+
+[dependencies.comrak]
+version = "0.36"
+features = []
+optional = true
+
+[dependencies.cxx]
+version = "1.0"
+optional = true
+
+[dependencies.indexmap]
+version = "2.8"
+features = ["serde"]
+
+[dependencies.indoc]
+version = "2"
+
+[dependencies.js-sys]
+version = "0.3"
+optional = true
+
+[dependencies.lalrpop-util]
+version = "0.22.1"
+
+[dependencies.logos]
+version = "0.15"
+
+[dependencies.malachite]
+version = "0.6"
+features = ["enable_serde"]
+
+[dependencies.malachite-q]
+version = "0.6"
+
+[dependencies.md-5]
+version = "0.10.6"
+
+[dependencies.metrics]
+version = "0.24"
+optional = true
+
+[dependencies.nickel-lang-vector]
+version = "0.1.0"
+
+[dependencies.once_cell]
+version = "1.21.1"
+
+[dependencies.ouroboros]
+version = "0.18.5"
+
+[dependencies.pretty]
+version = "0.12.4"
+
+[dependencies.regex]
+version = "1"
+
+[dependencies.rustyline]
+version = "15.0"
+optional = true
+
+[dependencies.rustyline-derive]
+version = "0.11.0"
+optional = true
+
+[dependencies.saphyr-parser]
+version = "0.0.6"
+
+[dependencies.serde]
+version = "1.0.164"
+features = ["derive"]
+
+[dependencies.serde-wasm-bindgen]
+version = "0.6.5"
+optional = true
+
+[dependencies.serde_json]
+version = "1.0.140"
+
+[dependencies.serde_repr]
+version = "0.1"
+optional = true
+
+[dependencies.serde_yaml]
+version = "0.9.19"
+
+[dependencies.sha-1]
+version = "0.10.0"
+
+[dependencies.sha2]
+version = "0.10.8"
+
+[dependencies.simple-counter]
+version = "0.1.0"
+
+[dependencies.smallvec]
+version = "1.14.0"
+
+[dependencies.strip-ansi-escapes]
+version = "0.2.1"
+
+[dependencies.strsim]
+version = "0.11"
+
+[dependencies.termimad]
+version = "0.31.2"
+optional = true
+
+[dependencies.toml]
+version = "0.9"
+
+[dependencies.toml_edit]
+version = "0.23"
+features = ["parse"]
+
+[dependencies.topiary-core]
+version = "0.6"
+optional = true
+
+[dependencies.topiary-queries]
+version = "0.6"
+features = ["nickel"]
+optional = true
+default-features = false
+
+[dependencies.tree-sitter-nickel]
+version = "0.5.0"
+optional = true
+
+[dependencies.typed-arena]
+version = "2.0.2"
+
+[dependencies.unicode-segmentation]
+version = "1.12.0"
+
+[dependencies.wasm-bindgen]
+version = "=0.2.100"
+features = ["serde-serialize"]
+optional = true
+
+[dev-dependencies.assert_matches]
+version = "1.5.0"
+
+[dev-dependencies.criterion]
+version = "0.5"
+
+[dev-dependencies.pretty_assertions]
+version = "1.4.1"
+
+[dev-dependencies.similar]
+version = "2.7.0"
+
+[dev-dependencies.test-generator]
+version = "0.3.1"
+
+[build-dependencies.cxx-build]
+version = "1.0"
+optional = true
+
+[build-dependencies.lalrpop]
+version = "0.22.1"
+
+[build-dependencies.pkg-config]
+version = "0.3.32"
+optional = true
+
+[lints.clippy]
+new_without_default = "allow"

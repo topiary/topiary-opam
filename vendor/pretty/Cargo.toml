@@ -12,12 +12,18 @@
 [package]
 edition = "2018"
 name = "pretty"
-version = "0.11.3"
+version = "0.12.5"
 authors = [
     "Jonathan Sterling <jon@jonmsterling.com>",
     "Darin Morrison <darinmorrison+git@gmail.com>",
     "Markus Westerlind <marwes91@gmail.com>",
 ]
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
 description = "Wadler-style pretty-printing combinators in Rust"
 documentation = "https://docs.rs/pretty/"
 readme = "README.md"
@@ -32,22 +38,26 @@ repository = "https://github.com/Marwes/pretty.rs"
 [package.metadata.docs.rs]
 features = ["termcolor"]
 
-[[example]]
-name = "trees"
+[lib]
+name = "pretty"
+path = "src/lib.rs"
 
 [[example]]
 name = "colored"
+path = "examples/colored.rs"
 required-features = ["termcolor"]
+
+[[example]]
+name = "trees"
+path = "examples/trees.rs"
 
 [[bench]]
 name = "trees"
+path = "benches/trees.rs"
 harness = false
 
 [dependencies.arrayvec]
 version = "0.5"
-
-[dependencies.log]
-version = "0.4"
 
 [dependencies.termcolor]
 version = "1.1.0"
@@ -56,17 +66,17 @@ optional = true
 [dependencies.typed-arena]
 version = "2.0.0"
 
-[dependencies.unicode-segmentation]
-version = "1"
+[dependencies.unicode-width]
+version = "0.2"
 
 [dev-dependencies.criterion]
-version = "0.3"
+version = "0.4"
 
 [dev-dependencies.difference]
 version = "2"
 
-[dev-dependencies.env_logger]
-version = "0.9"
+[dev-dependencies.expect-test]
+version = "1"
 
 [dev-dependencies.tempfile]
 version = "3.1.0"

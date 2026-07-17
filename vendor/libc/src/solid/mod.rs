@@ -4,16 +4,6 @@
 
 use crate::prelude::*;
 
-pub type c_schar = i8;
-pub type c_uchar = u8;
-pub type c_short = i16;
-pub type c_ushort = u16;
-pub type c_int = i32;
-pub type c_uint = u32;
-pub type c_float = f32;
-pub type c_double = f64;
-pub type c_longlong = i64;
-pub type c_ulonglong = u64;
 pub type intmax_t = i64;
 pub type uintmax_t = u64;
 
@@ -405,7 +395,7 @@ pub const SIGUSR1: c_int = 30;
 pub const SIGUSR2: c_int = 31;
 pub const SIGPWR: c_int = 32;
 
-#[cfg_attr(feature = "extra_traits", derive(Debug))]
+#[derive(Debug)]
 pub enum FILE {}
 impl Copy for FILE {}
 impl Clone for FILE {
@@ -413,7 +403,7 @@ impl Clone for FILE {
         *self
     }
 }
-#[cfg_attr(feature = "extra_traits", derive(Debug))]
+#[derive(Debug)]
 pub enum fpos_t {}
 impl Copy for fpos_t {}
 impl Clone for fpos_t {

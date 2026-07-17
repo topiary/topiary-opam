@@ -16,14 +16,13 @@ use crate::tok;
 use crate::util::Sep;
 use itertools::Itertools;
 use lalrpop_util::ParseError;
-use tiny_keccak::{Hasher, Sha3};
+use sha3::{Digest, Sha3_256};
 use walkdir::WalkDir;
 
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::exit;
 use std::rc::Rc;
 
 mod action;
@@ -44,11 +43,10 @@ fn hash_file(file: &Path) -> io::Result<String> {
     let mut file_bytes = Vec::new();
     file.read_to_end(&mut file_bytes).unwrap();
 
-    let mut sha3 = Sha3::v256();
+    let mut sha3 = Sha3_256::new();
     sha3.update(&file_bytes);
 
-    let mut output = [0u8; 32];
-    sha3.finalize(&mut output);
+    let output = sha3.finalize();
 
     Ok(format!("// sha3: {:02x}", output.iter().format("")))
 }
@@ -278,6 +276,7 @@ fn parse_and_normalize_grammar(session: &Session, file_text: &FileText) -> io::R
                 pt::Span(location, location),
                 &format!("invalid character `{}`", ch),
             );
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
 
         Err(ParseError::UnrecognizedEof { location, .. }) => {
@@ -286,6 +285,7 @@ fn parse_and_normalize_grammar(session: &Session, file_text: &FileText) -> io::R
                 pt::Span(location, location),
                 "unexpected end of file",
             );
+            return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
         }
 
         Err(ParseError::UnrecognizedToken {
@@ -299,6 +299,7 @@ fn parse_and_normalize_grammar(session: &Session, file_text: &FileText) -> io::R
                 pt::Span(lo, hi),
                 &format!("unexpected token: `{}`", text),
             );
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
 
         Err(ParseError::ExtraToken { token: (lo, _, hi) }) => {
@@ -308,14 +309,16 @@ fn parse_and_normalize_grammar(session: &Session, file_text: &FileText) -> io::R
                 pt::Span(lo, hi),
                 &format!("extra token at end of input: `{}`", text),
             );
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
 
         Err(ParseError::User { error }) => {
             let string = match error.code {
                 tok::ErrorCode::UnrecognizedToken => "unrecognized token",
                 tok::ErrorCode::UnterminatedEscape => "unterminated escape; missing '`'?",
+                tok::ErrorCode::UnterminatedAsciiEscape => "unterminated ascii escape; missing second digit?",
                 tok::ErrorCode::UnrecognizedEscape => {
-                    "unrecognized escape; only \\n, \\r, \\t, \\\" and \\\\ are recognized"
+                    "unrecognized escape; only \\n, \\r, \\t, \\0, \\\", \\\\, and \\x## are recognized"
                 }
                 tok::ErrorCode::UnterminatedStringLiteral => {
                     "unterminated string literal; missing `\"`?"
@@ -337,24 +340,26 @@ fn parse_and_normalize_grammar(session: &Session, file_text: &FileText) -> io::R
                 file_text,
                 pt::Span(error.location, error.location + 1),
                 string,
-            )
+            );
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
     };
 
     match normalize::normalize(session, grammar) {
         Ok(grammar) => Ok(grammar),
-        Err(error) => report_error(file_text, error.span, &error.message),
+        Err(error) => {
+            report_error(file_text, error.span, &error.message);
+            Err(io::Error::from(io::ErrorKind::InvalidData))
+        }
     }
 }
 
-fn report_error(file_text: &FileText, span: pt::Span, message: &str) -> ! {
+fn report_error(file_text: &FileText, span: pt::Span, message: &str) {
     println!("{} error: {}", file_text.span_str(span), message);
 
     let out = io::stderr();
     let mut out = out.lock();
     file_text.highlight(span, &mut out).unwrap();
-
-    exit(1);
 }
 
 fn report_message(message: Message) -> term::Result<()> {
@@ -427,7 +432,7 @@ fn emit_recursive_ascent(
 
     if grammar.start_nonterminals.is_empty() {
         println!("Error: no public symbols declared in grammar");
-        exit(1);
+        return Err(io::Error::from(io::ErrorKind::InvalidData));
     }
 
     // Find a better visibility for some generated items.
@@ -467,7 +472,7 @@ fn emit_recursive_ascent(
             Ok(states) => states,
             Err(error) => {
                 let _ = lr1::report_error(grammar, &error, report_message);
-                exit(1) // FIXME -- propagate up instead of calling `exit`
+                return Err(io::Error::from(io::ErrorKind::InvalidData));
             }
         };
 
@@ -520,6 +525,7 @@ fn emit_recursive_ascent(
 
     action::emit_action_code(grammar, &mut rust)?;
 
+    rust!(rust, "");
     rust!(rust, "#[allow(clippy::type_complexity, dead_code)]");
     emit_to_triple_trait(grammar, max_start_nt_visibility, &mut rust)?;
 
@@ -566,10 +572,9 @@ fn emit_to_triple_trait<W: Write>(
     let where_clauses = &grammar.where_clauses;
     let to_triple_where_clauses = Sep(",", where_clauses);
 
-    rust!(rust, "");
     rust!(
         rust,
-        "{} trait {}ToTriple<{}>",
+        "{}trait {}ToTriple<{}>",
         max_start_nt_visibility,
         grammar.prefix,
         user_type_parameters,
@@ -578,7 +583,7 @@ fn emit_to_triple_trait<W: Write>(
     rust!(rust, "{{");
     rust!(
         rust,
-        "fn to_triple(value: Self) -> Result<({L},{T},{L}), {parse_error}>;",
+        "fn to_triple(self) -> Result<({L},{T},{L}), {parse_error}>;",
         L = L,
         T = T,
         parse_error = parse_error,
@@ -599,12 +604,12 @@ fn emit_to_triple_trait<W: Write>(
         rust!(rust, "{{");
         rust!(
             rust,
-            "fn to_triple(value: Self) -> Result<({L},{T},{L}), {parse_error}> {{",
+            "fn to_triple(self) -> Result<({L},{T},{L}), {parse_error}> {{",
             L = L,
             T = T,
             parse_error = parse_error,
         );
-        rust!(rust, "Ok(value)");
+        rust!(rust, "Ok(self)");
         rust!(rust, "}}");
         rust!(rust, "}}");
 
@@ -621,19 +626,16 @@ fn emit_to_triple_trait<W: Write>(
         rust!(rust, "{{");
         rust!(
             rust,
-            "fn to_triple(value: Self) -> Result<({L},{T},{L}), {parse_error}> {{",
+            "fn to_triple(self) -> Result<({L},{T},{L}), {parse_error}> {{",
             L = L,
             T = T,
             parse_error = parse_error,
         );
-        rust!(rust, "match value {{");
-        rust!(rust, "Ok(v) => Ok(v),");
         rust!(
             rust,
-            "Err(error) => Err({p}lalrpop_util::ParseError::User {{ error }}),",
+            "self.map_err(|error| {p}lalrpop_util::ParseError::User {{ error }})",
             p = grammar.prefix
         );
-        rust!(rust, "}}"); // match
         rust!(rust, "}}");
         rust!(rust, "}}");
     } else {
@@ -648,11 +650,11 @@ fn emit_to_triple_trait<W: Write>(
         rust!(rust, "{{");
         rust!(
             rust,
-            "fn to_triple(value: Self) -> Result<((),{T},()), {parse_error}> {{",
+            "fn to_triple(self) -> Result<((),{T},()), {parse_error}> {{",
             T = T,
             parse_error = parse_error,
         );
-        rust!(rust, "Ok(((), value, ()))");
+        rust!(rust, "Ok(((), self, ()))");
         rust!(rust, "}}");
         rust!(rust, "}}");
 
@@ -668,11 +670,11 @@ fn emit_to_triple_trait<W: Write>(
         rust!(rust, "{{");
         rust!(
             rust,
-            "fn to_triple(value: Self) -> Result<((),{T},()), {parse_error}> {{",
+            "fn to_triple(self) -> Result<((),{T},()), {parse_error}> {{",
             T = T,
             parse_error = parse_error,
         );
-        rust!(rust, "match value {{");
+        rust!(rust, "match self {{");
         rust!(rust, "Ok(v) => Ok(((), v, ())),");
         rust!(
             rust,

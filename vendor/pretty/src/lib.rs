@@ -151,8 +151,10 @@ use std::{
 #[cfg(feature = "termcolor")]
 use termcolor::{ColorSpec, WriteColor};
 
+pub mod block;
 mod render;
 
+pub use self::block::{Affixes, BlockDoc};
 #[cfg(feature = "termcolor")]
 pub use self::render::TermColored;
 pub use self::render::{FmtWrite, IoWrite, Render, RenderAnnotated};
@@ -270,9 +272,9 @@ where
 }
 
 macro_rules! impl_doc {
-    ($name: ident, $allocator: ident) => {
+    ($name: ident, $ptr: ident, $allocator: ident) => {
         #[derive(Clone)]
-        pub struct $name<'a, A = ()>(Box<Doc<'a, $name<'a, A>, A>>);
+        pub struct $name<'a, A = ()>($ptr<Doc<'a, $name<'a, A>, A>>);
 
         impl<'a, A> fmt::Debug for $name<'a, A>
         where
@@ -285,7 +287,7 @@ macro_rules! impl_doc {
 
         impl<'a, A> $name<'a, A> {
             pub fn new(doc: Doc<'a, $name<'a, A>, A>) -> $name<'a, A> {
-                $name(Box::new(doc))
+                $name($ptr::new(doc))
             }
         }
 
@@ -467,7 +469,7 @@ impl fmt::Write for FmtText {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         match self {
             FmtText::Small(buf) => {
-                if let Err(_) = buf.try_push_str(s) {
+                if buf.try_push_str(s).is_err() {
                     let mut new_str = String::with_capacity(buf.len() + s.len());
                     new_str.push_str(buf);
                     new_str.push_str(s);
@@ -526,8 +528,8 @@ macro_rules! impl_doc_methods {
     };
 }
 
-impl_doc!(BoxDoc, BoxAllocator);
-impl_doc!(RcDoc, RcAllocator);
+impl_doc!(BoxDoc, Box, BoxAllocator);
+impl_doc!(RcDoc, Rc, RcAllocator);
 
 impl_doc_methods!(Doc ('a, D, A) where (D: DocPtr<'a, A>) where (D: StaticDoc<'a, A>));
 impl_doc_methods!(BuildDoc ('a, D, A) where (D: DocPtr<'a, A>) where (D: StaticDoc<'a, A>));
@@ -749,12 +751,12 @@ where
     }
 }
 
-impl<'a, D, A> Into<BuildDoc<'a, D::Doc, A>> for DocBuilder<'a, D, A>
+impl<'a, D, A> From<DocBuilder<'a, D, A>> for BuildDoc<'a, D::Doc, A>
 where
     D: ?Sized + DocAllocator<'a, A>,
 {
-    fn into(self) -> BuildDoc<'a, D::Doc, A> {
-        self.1
+    fn from(val: DocBuilder<'a, D, A>) -> Self {
+        val.1
     }
 }
 
@@ -879,6 +881,22 @@ where
 {
     fn pretty(self, allocator: &'a D) -> DocBuilder<'a, D, A> {
         allocator.text(self)
+    }
+}
+
+impl<'a, D, A, S> Pretty<'a, D, A> for Cow<'a, S>
+where
+    A: 'a,
+    D: ?Sized + DocAllocator<'a, A>,
+    S: ?Sized + ToOwned,
+    &'a S: Pretty<'a, D, A>,
+    S::Owned: Pretty<'a, D, A>,
+{
+    fn pretty(self, allocator: &'a D) -> DocBuilder<'a, D, A> {
+        match self {
+            Cow::Borrowed(s) => s.pretty(allocator),
+            Cow::Owned(s) => s.pretty(allocator),
+        }
     }
 }
 
@@ -1222,7 +1240,10 @@ where
 /// ```
 #[macro_export]
 macro_rules! docs {
-    ($alloc: expr, $first: expr $(, $rest: expr)* $(,)?) => {{
+    ($alloc: expr, $first: expr $(,)?) => {
+        $crate::Pretty::pretty($first, $alloc)
+    };
+    ($alloc: expr, $first: expr $(, $rest: expr)+ $(,)?) => {{
         let mut doc = $crate::Pretty::pretty($first, $alloc);
         $(
             doc = doc.append($rest);
@@ -1243,16 +1264,16 @@ where
             Doc::SmallText(s) => s,
             _ => return self,
         };
-        use unicode_segmentation::UnicodeSegmentation;
 
         if s.is_ascii() {
             self
         } else {
-            let grapheme_len = s.graphemes(true).count();
+            let display_width = unicode_width::UnicodeWidthStr::width(s);
+
             let DocBuilder(allocator, _) = self;
             DocBuilder(
                 allocator,
-                Doc::RenderLen(grapheme_len, self.into_doc()).into(),
+                Doc::RenderLen(display_width, self.into_doc()).into(),
             )
         }
     }
@@ -1271,8 +1292,8 @@ where
             _ => DocBuilder(
                 allocator,
                 Doc::Append(
-                    allocator.alloc_cow(self.into()).into(),
-                    allocator.alloc_cow(that.into()).into(),
+                    allocator.alloc_cow(self.into()),
+                    allocator.alloc_cow(that.into()),
                 )
                 .into(),
             ),
@@ -1312,11 +1333,7 @@ where
         let that = that.pretty(allocator);
         DocBuilder(
             allocator,
-            Doc::FlatAlt(
-                allocator.alloc_cow(this.into()),
-                allocator.alloc_cow(that.into()),
-            )
-            .into(),
+            Doc::FlatAlt(allocator.alloc_cow(this), allocator.alloc_cow(that.into())).into(),
         )
     }
 
@@ -1383,12 +1400,18 @@ where
     /// like `RefDoc` or `RcDoc`
     ///
     /// ```rust
-    /// use pretty::DocAllocator;
+    /// use pretty::{docs, DocAllocator};
     ///
-    /// let arena = pretty::Arena::<()>::new();
-    /// let doc = arena.text("lorem").append(arena.text(" "))
-    ///     .append(arena.intersperse(["ipsum", "dolor"].iter().cloned(), arena.line_()).align());
-    /// assert_eq!(doc.1.pretty(80).to_string(), "lorem ipsum\n      dolor");
+    /// let arena = &pretty::Arena::<()>::new();
+    /// let doc = docs![
+    ///     arena,
+    ///     "lorem",
+    ///     " ",
+    ///     arena.intersperse(["ipsum", "dolor"].iter().cloned(), arena.line_()).align(),
+    ///     arena.hardline(),
+    ///     "next",
+    /// ];
+    /// assert_eq!(doc.1.pretty(80).to_string(), "lorem ipsum\n      dolor\nnext");
     /// ```
     #[inline]
     pub fn align(self) -> DocBuilder<'a, D, A>
@@ -1572,7 +1595,7 @@ impl<'a, A> Deref for RefDoc<'a, A> {
     type Target = Doc<'a, RefDoc<'a, A>, A>;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        self.0
     }
 }
 
@@ -1702,8 +1725,6 @@ impl<'a, A> DocAllocator<'a, A> for Arena<'a, A> {
 
 #[cfg(test)]
 mod tests {
-    use difference;
-
     use super::*;
 
     macro_rules! chain {
@@ -1892,7 +1913,6 @@ mod tests {
         BoxDoc::softline().append(BoxDoc::nesting(move |n| {
             let doc = doc.clone();
             BoxDoc::column(move |c| {
-                log::trace!("{} == {}", n, c);
                 if n == c {
                     BoxDoc::text("  ").append(doc.clone()).nest(2)
                 } else {
@@ -1904,8 +1924,6 @@ mod tests {
 
     #[test]
     fn hang_lambda1() {
-        let _ = env_logger::try_init();
-
         let doc = chain![
             chain!["let", BoxDoc::line(), "x", BoxDoc::line(), "="].group(),
             nest_on_line(chain![
@@ -2123,5 +2141,52 @@ mod tests {
         );
 
         test!(8, doc, "ÅÄÖ test");
+    }
+
+    #[test]
+    fn cjk_display_width() {
+        let arena = Arena::<()>::new();
+        let doc = arena
+            .text("你好")
+            .append(arena.line().append(arena.text("abc")).align())
+            .into_doc();
+
+        test!(doc, "你好\n    abc");
+    }
+
+    #[test]
+    fn pretty_cow() {
+        let doc: BoxDoc<()> = docs![
+            &BoxAllocator,
+            Cow::<str>::Borrowed("abc"),
+            BoxDoc::line(),
+            Cow::<str>::Owned("123".to_string()),
+        ]
+        .group()
+        .into_doc();
+
+        test!(8, doc, "abc 123");
+    }
+
+    #[test]
+    fn stress_append_left_assoc() {
+        let arena = Arena::new();
+        let mut doc: DocBuilder<'_, Arena<'_, _>, char> = arena.nil();
+        for _ in 0..100000 {
+            doc = doc.append("a");
+        }
+        let mut s = String::new();
+        doc.render_fmt(80, &mut s).unwrap();
+    }
+
+    #[test]
+    fn stress_append_right_assoc() {
+        let arena = Arena::new();
+        let mut doc: RefDoc<'_, char> = arena.nil().into_doc();
+        for _ in 0..100000 {
+            doc = arena.text("a").append(doc).into_doc();
+        }
+        let mut s = String::new();
+        doc.render_fmt(80, &mut s).unwrap();
     }
 }

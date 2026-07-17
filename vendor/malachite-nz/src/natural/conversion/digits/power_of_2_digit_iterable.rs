@@ -6,12 +6,12 @@
 // Lesser General Public License (LGPL) as published by the Free Software Foundation; either version
 // 3 of the License, or (at your option) any later version. See <https://www.gnu.org/licenses/>.
 
-use crate::natural::logic::bit_block_access::limbs_slice_get_bits;
-use crate::natural::logic::significant_bits::limbs_significant_bits;
 use crate::natural::InnerNatural::{Large, Small};
 use crate::natural::Natural;
+use crate::natural::logic::bit_block_access::limbs_slice_get_bits;
+use crate::natural::logic::significant_bits::limbs_significant_bits;
 use crate::platform::Limb;
-use core::cmp::{min, Ordering::*};
+use core::cmp::{Ordering::*, min};
 use core::marker::PhantomData;
 use core::slice::Chunks;
 use malachite_base::num::arithmetic::traits::{
@@ -92,7 +92,7 @@ impl<T: PrimitiveUnsigned> DoubleEndedIterator for FILIterator<'_, T> {
 impl<T: PrimitiveUnsigned> ExactSizeIterator for FILIterator<'_, T> {}
 
 impl<T: PrimitiveUnsigned> PowerOf2DigitIterator<T> for FILIterator<'_, T> {
-    fn get(&self, index: u64) -> T {
+    fn get_digit(&self, index: u64) -> T {
         let log_log_base = self.log_base.floor_log_base_2();
         let log_ratio = Limb::LOG_WIDTH - log_log_base;
         let limb_index = usize::exact_from(index >> log_ratio);
@@ -157,7 +157,7 @@ impl<T: PrimitiveUnsigned> DoubleEndedIterator for SOLIterator<'_, T> {
 impl<T: PrimitiveUnsigned> ExactSizeIterator for SOLIterator<'_, T> {}
 
 impl<T: PrimitiveUnsigned> SOLIterator<'_, T> {
-    fn get(&self, index: u64) -> T {
+    fn get_digit(&self, index: u64) -> T {
         let index = usize::exact_from(index);
         if index < self.limbs.len() {
             T::wrapping_from(self.limbs[index])
@@ -201,7 +201,7 @@ impl<T: PrimitiveUnsigned> DoubleEndedIterator for MOLIterator<'_, T> {
 impl<T: PrimitiveUnsigned> ExactSizeIterator for MOLIterator<'_, T> {}
 
 impl<T: PrimitiveUnsigned> PowerOf2DigitIterator<T> for MOLIterator<'_, T> {
-    fn get(&self, index: u64) -> T {
+    fn get_digit(&self, index: u64) -> T {
         let start_index = usize::exact_from(index << self.log_ratio);
         if start_index >= self.limbs.len() {
             T::ZERO
@@ -237,7 +237,7 @@ impl<T: PrimitiveUnsigned> Iterator for IIterator<'_, T> {
 
     fn next(&mut self) -> Option<T> {
         if self.remaining != 0 {
-            let digit = self.get(self.i);
+            let digit = self.get_digit(self.i);
             self.i += 1;
             self.remaining -= 1;
             Some(digit)
@@ -255,7 +255,7 @@ impl<T: PrimitiveUnsigned> Iterator for IIterator<'_, T> {
 impl<T: PrimitiveUnsigned> DoubleEndedIterator for IIterator<'_, T> {
     fn next_back(&mut self) -> Option<T> {
         if self.remaining != 0 {
-            let digit = self.get(self.j);
+            let digit = self.get_digit(self.j);
             self.j.saturating_sub_assign(1);
             self.remaining -= 1;
             Some(digit)
@@ -268,7 +268,7 @@ impl<T: PrimitiveUnsigned> DoubleEndedIterator for IIterator<'_, T> {
 impl<T: PrimitiveUnsigned> ExactSizeIterator for IIterator<'_, T> {}
 
 impl<T: PrimitiveUnsigned> IIterator<'_, T> {
-    fn get(&self, index: u64) -> T {
+    fn get_digit(&self, index: u64) -> T {
         let start = index * self.log_base;
         let limb_start = usize::exact_from(start >> Limb::LOG_WIDTH);
         let len = self.limbs.len();
@@ -322,22 +322,22 @@ impl<T: PrimitiveUnsigned> Iterator for NaturalPowerOf2DigitPrimitiveIterator<'_
     /// # Worst-case complexity
     /// Constant time and additional memory.
     fn next(&mut self) -> Option<T> {
-        match *self {
-            NaturalPowerOf2DigitPrimitiveIterator::Small(ref mut xs) => xs.next(),
-            NaturalPowerOf2DigitPrimitiveIterator::FitsInLimb(ref mut xs) => xs.0.next(),
-            NaturalPowerOf2DigitPrimitiveIterator::SizeOfLimb(ref mut xs) => xs.0.next(),
-            NaturalPowerOf2DigitPrimitiveIterator::MultipleOfLimb(ref mut xs) => xs.0.next(),
-            NaturalPowerOf2DigitPrimitiveIterator::Irregular(ref mut xs) => xs.0.next(),
+        match self {
+            NaturalPowerOf2DigitPrimitiveIterator::Small(xs) => xs.next(),
+            NaturalPowerOf2DigitPrimitiveIterator::FitsInLimb(xs) => xs.0.next(),
+            NaturalPowerOf2DigitPrimitiveIterator::SizeOfLimb(xs) => xs.0.next(),
+            NaturalPowerOf2DigitPrimitiveIterator::MultipleOfLimb(xs) => xs.0.next(),
+            NaturalPowerOf2DigitPrimitiveIterator::Irregular(xs) => xs.0.next(),
         }
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        match *self {
-            NaturalPowerOf2DigitPrimitiveIterator::Small(ref xs) => xs.size_hint(),
-            NaturalPowerOf2DigitPrimitiveIterator::FitsInLimb(ref xs) => xs.0.size_hint(),
-            NaturalPowerOf2DigitPrimitiveIterator::SizeOfLimb(ref xs) => xs.0.size_hint(),
-            NaturalPowerOf2DigitPrimitiveIterator::MultipleOfLimb(ref xs) => xs.0.size_hint(),
-            NaturalPowerOf2DigitPrimitiveIterator::Irregular(ref xs) => xs.0.size_hint(),
+        match self {
+            NaturalPowerOf2DigitPrimitiveIterator::Small(xs) => xs.size_hint(),
+            NaturalPowerOf2DigitPrimitiveIterator::FitsInLimb(xs) => xs.0.size_hint(),
+            NaturalPowerOf2DigitPrimitiveIterator::SizeOfLimb(xs) => xs.0.size_hint(),
+            NaturalPowerOf2DigitPrimitiveIterator::MultipleOfLimb(xs) => xs.0.size_hint(),
+            NaturalPowerOf2DigitPrimitiveIterator::Irregular(xs) => xs.0.size_hint(),
         }
     }
 }
@@ -349,12 +349,12 @@ impl<T: PrimitiveUnsigned> DoubleEndedIterator for NaturalPowerOf2DigitPrimitive
     /// # Worst-case complexity
     /// Constant time and additional memory.
     fn next_back(&mut self) -> Option<T> {
-        match *self {
-            NaturalPowerOf2DigitPrimitiveIterator::Small(ref mut xs) => xs.next_back(),
-            NaturalPowerOf2DigitPrimitiveIterator::FitsInLimb(ref mut xs) => xs.0.next_back(),
-            NaturalPowerOf2DigitPrimitiveIterator::SizeOfLimb(ref mut xs) => xs.0.next_back(),
-            NaturalPowerOf2DigitPrimitiveIterator::MultipleOfLimb(ref mut xs) => xs.0.next_back(),
-            NaturalPowerOf2DigitPrimitiveIterator::Irregular(ref mut xs) => xs.0.next_back(),
+        match self {
+            NaturalPowerOf2DigitPrimitiveIterator::Small(xs) => xs.next_back(),
+            NaturalPowerOf2DigitPrimitiveIterator::FitsInLimb(xs) => xs.0.next_back(),
+            NaturalPowerOf2DigitPrimitiveIterator::SizeOfLimb(xs) => xs.0.next_back(),
+            NaturalPowerOf2DigitPrimitiveIterator::MultipleOfLimb(xs) => xs.0.next_back(),
+            NaturalPowerOf2DigitPrimitiveIterator::Irregular(xs) => xs.0.next_back(),
         }
     }
 }
@@ -384,27 +384,27 @@ impl<T: PrimitiveUnsigned> PowerOf2DigitIterator<T>
     ///
     /// let n = Natural::ZERO;
     /// assert_eq!(
-    ///     PowerOf2DigitIterable::<u8>::power_of_2_digits(&n, 2).get(0),
+    ///     PowerOf2DigitIterable::<u8>::power_of_2_digits(&n, 2).get_digit(0),
     ///     0
     /// );
     ///
     /// // 107 = 1223_4
     /// let n = Natural::from(107u32);
     /// let digits = PowerOf2DigitIterable::<u32>::power_of_2_digits(&n, 2);
-    /// assert_eq!(digits.get(0), 3);
-    /// assert_eq!(digits.get(1), 2);
-    /// assert_eq!(digits.get(2), 2);
-    /// assert_eq!(digits.get(3), 1);
-    /// assert_eq!(digits.get(4), 0);
-    /// assert_eq!(digits.get(100), 0);
+    /// assert_eq!(digits.get_digit(0), 3);
+    /// assert_eq!(digits.get_digit(1), 2);
+    /// assert_eq!(digits.get_digit(2), 2);
+    /// assert_eq!(digits.get_digit(3), 1);
+    /// assert_eq!(digits.get_digit(4), 0);
+    /// assert_eq!(digits.get_digit(100), 0);
     /// ```
-    fn get(&self, index: u64) -> T {
-        match *self {
-            NaturalPowerOf2DigitPrimitiveIterator::Small(ref xs) => xs.get(index),
-            NaturalPowerOf2DigitPrimitiveIterator::FitsInLimb(ref xs) => xs.0.get(index),
-            NaturalPowerOf2DigitPrimitiveIterator::SizeOfLimb(ref xs) => xs.0.get(index),
-            NaturalPowerOf2DigitPrimitiveIterator::MultipleOfLimb(ref xs) => xs.0.get(index),
-            NaturalPowerOf2DigitPrimitiveIterator::Irregular(ref xs) => xs.0.get(index),
+    fn get_digit(&self, index: u64) -> T {
+        match self {
+            NaturalPowerOf2DigitPrimitiveIterator::Small(xs) => xs.get_digit(index),
+            NaturalPowerOf2DigitPrimitiveIterator::FitsInLimb(xs) => xs.0.get_digit(index),
+            NaturalPowerOf2DigitPrimitiveIterator::SizeOfLimb(xs) => xs.0.get_digit(index),
+            NaturalPowerOf2DigitPrimitiveIterator::MultipleOfLimb(xs) => xs.0.get_digit(index),
+            NaturalPowerOf2DigitPrimitiveIterator::Irregular(xs) => xs.0.get_digit(index),
         }
     }
 }
@@ -486,7 +486,7 @@ where
         Natural(Small(small)) => NaturalPowerOf2DigitPrimitiveIterator::Small(
             PowerOf2DigitIterable::<T>::power_of_2_digits(*small, log_base),
         ),
-        Natural(Large(ref limbs)) => {
+        Natural(Large(limbs)) => {
             if let Some(log_log_base) = log_base.checked_log_base_2() {
                 match log_log_base.cmp(&Limb::LOG_WIDTH) {
                     Equal => NaturalPowerOf2DigitPrimitiveIterator::SizeOfLimb(
@@ -578,7 +578,7 @@ impl DoubleEndedIterator for NMOLIterator<'_> {
 impl ExactSizeIterator for NMOLIterator<'_> {}
 
 impl PowerOf2DigitIterator<Natural> for NMOLIterator<'_> {
-    fn get(&self, index: u64) -> Natural {
+    fn get_digit(&self, index: u64) -> Natural {
         let start_index = usize::exact_from(index << self.log_ratio);
         if start_index >= self.limbs.len() {
             Natural::ZERO
@@ -613,7 +613,7 @@ impl Iterator for NIIterator<'_> {
 
     fn next(&mut self) -> Option<Natural> {
         if self.remaining != 0 {
-            let digit = self.get(self.i);
+            let digit = self.get_digit(self.i);
             self.i += 1;
             self.remaining -= 1;
             Some(digit)
@@ -631,7 +631,7 @@ impl Iterator for NIIterator<'_> {
 impl DoubleEndedIterator for NIIterator<'_> {
     fn next_back(&mut self) -> Option<Natural> {
         if self.remaining != 0 {
-            let digit = self.get(self.j);
+            let digit = self.get_digit(self.j);
             self.j.saturating_sub_assign(1);
             self.remaining -= 1;
             Some(digit)
@@ -644,7 +644,7 @@ impl DoubleEndedIterator for NIIterator<'_> {
 impl ExactSizeIterator for NIIterator<'_> {}
 
 impl NIIterator<'_> {
-    fn get(&self, index: u64) -> Natural {
+    fn get_digit(&self, index: u64) -> Natural {
         let start_index = index.checked_mul(self.log_base).unwrap();
         Natural::from_owned_limbs_asc(limbs_slice_get_bits(
             self.limbs,
@@ -683,22 +683,20 @@ impl Iterator for NaturalPowerOf2DigitIterator<'_> {
     ///
     /// where $T$ is time, $M$ is additional memory, and $n$ is `log_base`.
     fn next(&mut self) -> Option<Natural> {
-        match *self {
-            NaturalPowerOf2DigitIterator::Small(ref mut xs) => xs.next().map(Natural::from),
-            NaturalPowerOf2DigitIterator::SmallerThanLimb(ref mut xs) => {
-                xs.next().map(Natural::from)
-            }
-            NaturalPowerOf2DigitIterator::MultipleOfLimb(ref mut xs) => xs.0.next(),
-            NaturalPowerOf2DigitIterator::Irregular(ref mut xs) => xs.0.next(),
+        match self {
+            NaturalPowerOf2DigitIterator::Small(xs) => xs.next().map(Natural::from),
+            NaturalPowerOf2DigitIterator::SmallerThanLimb(xs) => xs.next().map(Natural::from),
+            NaturalPowerOf2DigitIterator::MultipleOfLimb(xs) => xs.0.next(),
+            NaturalPowerOf2DigitIterator::Irregular(xs) => xs.0.next(),
         }
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        match *self {
-            NaturalPowerOf2DigitIterator::Small(ref xs) => xs.size_hint(),
-            NaturalPowerOf2DigitIterator::SmallerThanLimb(ref xs) => xs.size_hint(),
-            NaturalPowerOf2DigitIterator::MultipleOfLimb(ref xs) => xs.0.size_hint(),
-            NaturalPowerOf2DigitIterator::Irregular(ref xs) => xs.0.size_hint(),
+        match self {
+            NaturalPowerOf2DigitIterator::Small(xs) => xs.size_hint(),
+            NaturalPowerOf2DigitIterator::SmallerThanLimb(xs) => xs.size_hint(),
+            NaturalPowerOf2DigitIterator::MultipleOfLimb(xs) => xs.0.size_hint(),
+            NaturalPowerOf2DigitIterator::Irregular(xs) => xs.0.size_hint(),
         }
     }
 }
@@ -736,13 +734,11 @@ impl DoubleEndedIterator for NaturalPowerOf2DigitIterator<'_> {
     /// assert_eq!(digits.next_back(), None);
     /// ```
     fn next_back(&mut self) -> Option<Natural> {
-        match *self {
-            NaturalPowerOf2DigitIterator::Small(ref mut xs) => xs.next_back().map(Natural::from),
-            NaturalPowerOf2DigitIterator::SmallerThanLimb(ref mut xs) => {
-                xs.next_back().map(Natural::from)
-            }
-            NaturalPowerOf2DigitIterator::MultipleOfLimb(ref mut xs) => xs.0.next_back(),
-            NaturalPowerOf2DigitIterator::Irregular(ref mut xs) => xs.0.next_back(),
+        match self {
+            NaturalPowerOf2DigitIterator::Small(xs) => xs.next_back().map(Natural::from),
+            NaturalPowerOf2DigitIterator::SmallerThanLimb(xs) => xs.next_back().map(Natural::from),
+            NaturalPowerOf2DigitIterator::MultipleOfLimb(xs) => xs.0.next_back(),
+            NaturalPowerOf2DigitIterator::Irregular(xs) => xs.0.next_back(),
         }
     }
 }
@@ -774,26 +770,26 @@ impl PowerOf2DigitIterator<Natural> for NaturalPowerOf2DigitIterator<'_> {
     ///
     /// let n = Natural::ZERO;
     /// assert_eq!(
-    ///     PowerOf2DigitIterable::<Natural>::power_of_2_digits(&n, 2).get(0),
+    ///     PowerOf2DigitIterable::<Natural>::power_of_2_digits(&n, 2).get_digit(0),
     ///     0
     /// );
     ///
     /// // 107 = 1223_4
     /// let n = Natural::from(107u32);
     /// let digits = PowerOf2DigitIterable::<Natural>::power_of_2_digits(&n, 2);
-    /// assert_eq!(digits.get(0), 3);
-    /// assert_eq!(digits.get(1), 2);
-    /// assert_eq!(digits.get(2), 2);
-    /// assert_eq!(digits.get(3), 1);
-    /// assert_eq!(digits.get(4), 0);
-    /// assert_eq!(digits.get(100), 0);
+    /// assert_eq!(digits.get_digit(0), 3);
+    /// assert_eq!(digits.get_digit(1), 2);
+    /// assert_eq!(digits.get_digit(2), 2);
+    /// assert_eq!(digits.get_digit(3), 1);
+    /// assert_eq!(digits.get_digit(4), 0);
+    /// assert_eq!(digits.get_digit(100), 0);
     /// ```
-    fn get(&self, index: u64) -> Natural {
-        match *self {
-            NaturalPowerOf2DigitIterator::Small(ref xs) => Natural::from(xs.get(index)),
-            NaturalPowerOf2DigitIterator::SmallerThanLimb(ref xs) => Natural::from(xs.get(index)),
-            NaturalPowerOf2DigitIterator::MultipleOfLimb(ref xs) => xs.0.get(index),
-            NaturalPowerOf2DigitIterator::Irregular(ref xs) => xs.0.get(index),
+    fn get_digit(&self, index: u64) -> Natural {
+        match self {
+            NaturalPowerOf2DigitIterator::Small(xs) => Natural::from(xs.get_digit(index)),
+            NaturalPowerOf2DigitIterator::SmallerThanLimb(xs) => Natural::from(xs.get_digit(index)),
+            NaturalPowerOf2DigitIterator::MultipleOfLimb(xs) => xs.0.get_digit(index),
+            NaturalPowerOf2DigitIterator::Irregular(xs) => xs.0.get_digit(index),
         }
     }
 }
@@ -888,7 +884,7 @@ impl<'a> PowerOf2DigitIterable<Natural> for &'a Natural {
                 *small,
                 min(log_base, Limb::WIDTH),
             )),
-            Natural(Large(ref limbs)) => {
+            Natural(Large(limbs)) => {
                 if let Some(log_log_base) = log_base.checked_log_base_2() {
                     if log_log_base <= Limb::LOG_WIDTH {
                         NaturalPowerOf2DigitIterator::SmallerThanLimb(

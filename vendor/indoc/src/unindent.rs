@@ -1,3 +1,5 @@
+#![allow(unknown_lints, mismatched_lifetime_syntaxes)]
+
 use std::slice::Split;
 
 pub fn unindent(s: &str) -> String {
@@ -80,7 +82,7 @@ impl Unindent for [u8] {
     }
 }
 
-impl<'a, T: ?Sized + Unindent> Unindent for &'a T {
+impl<T: ?Sized + Unindent> Unindent for &T {
     type Output = T::Output;
 
     fn unindent(&self) -> Self::Output {

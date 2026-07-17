@@ -2,17 +2,27 @@
 //!
 //! Define error types for different phases of the execution, together with functions to generate a
 //! [codespan](https://crates.io/crates/codespan-reporting) diagnostic from them.
-pub use codespan::{FileId, Files};
+use codespan::ByteIndex;
 pub use codespan_reporting::diagnostic::{Diagnostic, Label, LabelStyle};
 
+use codespan_reporting::files::Files as _;
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream, WriteColor};
 use lalrpop_util::ErrorRecovery;
-use malachite::num::conversion::traits::ToSci;
+use malachite::base::num::conversion::traits::ToSci;
+
+use ouroboros::self_referencing;
 
 use crate::{
-    cache::Cache,
+    bytecode::ast::{
+        alloc::{AstAlloc, CloneTo},
+        compat::ToMainline as _,
+        typ::{EnumRow, RecordRow, Type},
+        Ast,
+    },
+    cache::InputFormat,
     eval::callstack::CallStack,
-    identifier::LocIdent,
+    files::{FileId, Files},
+    identifier::{Ident, LocIdent},
     label::{
         self,
         ty_path::{self, PathSpan},
@@ -27,12 +37,68 @@ use crate::{
     position::{RawSpan, TermPos},
     repl,
     serialize::{ExportFormat, NickelPointer},
-    term::{record::FieldMetadata, Number, RichTerm, Term},
-    typ::{EnumRow, RecordRow, Type, TypeF, VarKindDiscriminant},
+    term::{pattern::Pattern, record::FieldMetadata, Number, RichTerm, Term},
+    typ::{TypeF, VarKindDiscriminant},
 };
 
 pub mod report;
 pub mod suggest;
+pub mod warning;
+
+pub use warning::Warning;
+
+/// A `Reporter` is basically a callback function for reporting errors and/or warnings.
+///
+/// The error type `E` is a generic parameter, so the same object can be a `Reporter`
+/// of various different things.
+pub trait Reporter<E> {
+    /// Called when there is something (`e`) for the reporter to report.
+    fn report(&mut self, e: E);
+
+    /// A utility function for reporting error variants.
+    ///
+    /// When this is called with an `Ok(_)` it does nothing; when called with an `Err(e)`
+    /// it reports `e`.
+    fn report_result<T, E2>(&mut self, result: Result<T, E2>)
+    where
+        Self: Sized,
+        E2: Into<E>,
+    {
+        if let Err(e) = result {
+            self.report(e.into());
+        }
+    }
+}
+
+impl<E, R: Reporter<E>> Reporter<E> for &mut R {
+    fn report(&mut self, e: E) {
+        R::report(*self, e)
+    }
+}
+
+/// A [`Reporter`] that just collects errors.
+pub struct Sink<E> {
+    pub errors: Vec<E>,
+}
+
+impl<E> Default for Sink<E> {
+    fn default() -> Self {
+        Sink { errors: Vec::new() }
+    }
+}
+
+impl<E> Reporter<E> for Sink<E> {
+    fn report(&mut self, e: E) {
+        self.errors.push(e);
+    }
+}
+
+/// A [`Reporter`] that throws away all its errors.
+pub struct NullReporter {}
+
+impl<E> Reporter<E> for NullReporter {
+    fn report(&mut self, _e: E) {}
+}
 
 /// A general error occurring during either parsing or evaluation.
 #[derive(Debug, Clone, PartialEq)]
@@ -67,12 +133,16 @@ pub enum EvalError {
         pos_access: TermPos,
     },
     /// Mismatch between the expected type and the actual type of an expression.
-    TypeError(
-        /* expected type */ String,
-        /* free form message */ String,
-        /* position of the original unevaluated expression */ TermPos,
-        /* evaluated expression */ RichTerm,
-    ),
+    TypeError {
+        /// The expected type.
+        expected: String,
+        /// A freeform message.
+        message: String,
+        /// Position of the original unevaluated expression.
+        orig_pos: TermPos,
+        /// The evaluated expression.
+        term: RichTerm,
+    },
     /// `TypeError` when evaluating a unary primop
     UnaryPrimopTypeError {
         primop: String,
@@ -87,6 +157,7 @@ pub enum EvalError {
         arg_number: usize,
         arg_pos: TermPos,
         arg_evaluated: RichTerm,
+        op_pos: TermPos,
     },
     /// Tried to evaluate a term which wasn't parsed correctly.
     ParseError(ParseError),
@@ -138,6 +209,16 @@ pub enum EvalError {
         String,  /* error message */
         TermPos, /* position of the call to deserialize */
     ),
+    /// A parse error occurred during a call to the builtin `deserialize`.
+    ///
+    /// This differs from `DeserializationError` in that the inner error
+    /// isn't just a string: it can refer to positions.
+    DeserializationErrorWithInner {
+        format: InputFormat,
+        inner: ParseError,
+        /// Position of the call to deserialize.
+        pos: TermPos,
+    },
     /// A polymorphic record contract was broken somewhere.
     IllegalPolymorphicTailAccess {
         action: IllegalPolymorphicTailAction,
@@ -145,8 +226,12 @@ pub enum EvalError {
         label: label::Label,
         call_stack: CallStack,
     },
-    /// A non-equatable term was compared for equality.
-    EqError { eq_pos: TermPos, term: RichTerm },
+    /// Two non-equatable terms of the same type (e.g. functions) were compared for equality.
+    IncomparableValues {
+        eq_pos: TermPos,
+        left: RichTerm,
+        right: RichTerm,
+    },
     /// A value didn't match any branch of a `match` expression at runtime. This is a specialized
     /// version of [Self::NonExhaustiveMatch] when all branches are enum patterns. In this case,
     /// the error message is more informative than the generic one.
@@ -163,6 +248,12 @@ pub enum EvalError {
         value: RichTerm,
         /// The position of the `match` expression
         pos: TermPos,
+    },
+    FailedDestructuring {
+        /// The original term matched.
+        value: RichTerm,
+        /// The pattern that failed to match.
+        pattern: Pattern,
     },
     /// Tried to query a field of something that wasn't a record.
     QueryNonRecord {
@@ -184,7 +275,8 @@ pub enum IllegalPolymorphicTailAction {
     FieldAccess { field: String },
     Map,
     Merge,
-    RecordRemove { field: String },
+    FieldRemove { field: String },
+    Freeze,
 }
 
 impl IllegalPolymorphicTailAction {
@@ -197,9 +289,10 @@ impl IllegalPolymorphicTailAction {
             }
             Map => "cannot map over a record sealed by a polymorphic contract".to_owned(),
             Merge => "cannot merge a record sealed by a polymorphic contract".to_owned(),
-            RecordRemove { field } => {
+            FieldRemove { field } => {
                 format!("cannot remove field `{field}` sealed by a polymorphic contract")
             }
+            Freeze => "cannot freeze a record sealed by a polymorphic contract".to_owned(),
         }
     }
 }
@@ -207,34 +300,62 @@ impl IllegalPolymorphicTailAction {
 pub const UNKNOWN_SOURCE_NAME: &str = "<unknown> (generated by evaluation)";
 
 /// An error occurring during the static typechecking phase.
+#[self_referencing(pub_extras)]
+#[derive(Debug)]
+pub struct TypecheckError {
+    /// The allocator hosting the types and AST nodes.
+    alloc: AstAlloc,
+    /// The actual error data.
+    #[borrows(alloc)]
+    #[covariant]
+    pub error: TypecheckErrorData<'this>,
+}
+
+impl Clone for TypecheckError {
+    fn clone(&self) -> Self {
+        TypecheckError::new(AstAlloc::new(), |alloc| {
+            // We must clone the "shallow" layer of the error data to satisfy the `CloneTo`
+            // interface
+            TypecheckErrorData::clone_to(self.borrow_error().clone(), alloc)
+        })
+    }
+}
+
+impl PartialEq for TypecheckError {
+    fn eq(&self, other: &Self) -> bool {
+        self.borrow_error() == other.borrow_error()
+    }
+}
+
+/// The various kinds of typechecking errors.
 #[derive(Debug, PartialEq, Clone)]
-pub enum TypecheckError {
+pub enum TypecheckErrorData<'ast> {
     /// An unbound identifier was referenced.
-    UnboundIdentifier { id: LocIdent, pos: TermPos },
+    UnboundIdentifier(LocIdent),
     /// A specific row was expected to be in the type of an expression, but was not.
     MissingRow {
         id: LocIdent,
-        expected: Type,
-        inferred: Type,
+        expected: Type<'ast>,
+        inferred: Type<'ast>,
         pos: TermPos,
     },
     /// A dynamic tail was expected to be in the type of an expression, but was not.
     MissingDynTail {
-        expected: Type,
-        inferred: Type,
+        expected: Type<'ast>,
+        inferred: Type<'ast>,
         pos: TermPos,
     },
     /// A specific row was not expected to be in the type of an expression.
     ExtraRow {
         id: LocIdent,
-        expected: Type,
-        inferred: Type,
+        expected: Type<'ast>,
+        inferred: Type<'ast>,
         pos: TermPos,
     },
     /// A additional dynamic tail was not expected to be in the type of an expression.
     ExtraDynTail {
-        expected: Type,
-        inferred: Type,
+        expected: Type<'ast>,
+        inferred: Type<'ast>,
         pos: TermPos,
     },
     /// A parametricity violation involving a row-kinded type variable.
@@ -251,8 +372,8 @@ pub enum TypecheckError {
     /// `{ y : String }` as the `violating_type`.
     ForallParametricityViolation {
         kind: VarKindDiscriminant,
-        tail: Type,
-        violating_type: Type,
+        tail: Type<'ast>,
+        violating_type: Type<'ast>,
         pos: TermPos,
     },
     /// An unbound type variable was referenced.
@@ -260,8 +381,8 @@ pub enum TypecheckError {
     /// The actual (inferred or annotated) type of an expression is incompatible with its expected
     /// type.
     TypeMismatch {
-        expected: Type,
-        inferred: Type,
+        expected: Type<'ast>,
+        inferred: Type<'ast>,
         pos: TermPos,
     },
     /// The actual (inferred or annotated) record row type of an expression is incompatible with
@@ -269,17 +390,17 @@ pub enum TypecheckError {
     /// row-specific information.
     RecordRowMismatch {
         id: LocIdent,
-        expected: Type,
-        inferred: Type,
-        cause: Box<TypecheckError>,
+        expected: Type<'ast>,
+        inferred: Type<'ast>,
+        cause: Box<TypecheckErrorData<'ast>>,
         pos: TermPos,
     },
     /// Same as [Self::RecordRowMismatch] but for enum types.
     EnumRowMismatch {
         id: LocIdent,
-        expected: Type,
-        inferred: Type,
-        cause: Option<Box<TypecheckError>>,
+        expected: Type<'ast>,
+        inferred: Type<'ast>,
+        cause: Option<Box<TypecheckErrorData<'ast>>>,
         pos: TermPos,
     },
     /// Two incompatible types have been deduced for the same identifier of a row type.
@@ -299,18 +420,18 @@ pub enum TypecheckError {
     RecordRowConflict {
         /// The row that couldn't be added to the record type, because it already existed with a
         /// different type assignement.
-        row: RecordRow,
-        expected: Type,
-        inferred: Type,
+        row: RecordRow<'ast>,
+        expected: Type<'ast>,
+        inferred: Type<'ast>,
         pos: TermPos,
     },
     /// Same as [Self::RecordRowConflict] but for enum types.
     EnumRowConflict {
         /// The row that couldn't be added to the record type, because it already existed with a
         /// different type assignement.
-        row: EnumRow,
-        expected: Type,
-        inferred: Type,
+        row: EnumRow<'ast>,
+        expected: Type<'ast>,
+        inferred: Type<'ast>,
         pos: TermPos,
     },
     /// Type mismatch on a subtype of an an arrow type.
@@ -329,20 +450,11 @@ pub enum TypecheckError {
     /// This specific error stores additionally the [type path][crate::label::ty_path] that
     /// identifies the subtype where unification failed and the corresponding error.
     ArrowTypeMismatch {
-        expected: Type,
-        inferred: Type,
+        expected: Type<'ast>,
+        inferred: Type<'ast>,
         /// The path to the incompatible type components
         type_path: ty_path::Path,
-        cause: Box<TypecheckError>,
-        pos: TermPos,
-    },
-    /// This error should mostly not happen: contracts (flat types) are now properly checked for
-    /// equality. This error is raised when flat types are encountered during unification, but flat
-    /// types should all have been converted to `typecheck::UnifType::Contract` at this point.
-    /// Consider this as an internal, unexpected error.
-    IncomparableFlatTypes {
-        expected: RichTerm,
-        inferred: RichTerm,
+        cause: Box<TypecheckErrorData<'ast>>,
         pos: TermPos,
     },
     /// Within statically typed code, the typechecker must reject terms containing nonsensical
@@ -350,12 +462,12 @@ pub enum TypecheckError {
     /// runtime.
     ///
     /// The typechecker is currently quite conservative and simply forbids to store any custom
-    /// contract (flat type) in a type that appears in term position. Note that this restriction
+    /// contract in a type that appears in term position. Note that this restriction
     /// doesn't apply to annotations, which aren't considered part of the statically typed block.
     /// For example, `{foo = 5} | {foo : (4 + 1)}` is accepted by the typechecker.
-    FlatTypeInTermPosition {
+    CtrTypeInTermPos {
         /// The term that was in a flat type (the `(4 + 1)` in the example above).
-        flat: RichTerm,
+        contract: Ast<'ast>,
         /// The position of the entire type (the `{foo : 5}` in the example above).
         pos: TermPos,
     },
@@ -391,6 +503,15 @@ pub enum TypecheckError {
         /// The position of the expression that was being typechecked as `type_var`.
         pos: TermPos,
     },
+    /// Record-dict subtyping failed because the record was inhomogeneous.
+    InhomogeneousRecord {
+        /// One row of the record had this type.
+        row_a: Type<'ast>,
+        /// Another row of the record had this type.
+        row_b: Type<'ast>,
+        /// The position of the expression of record type.
+        pos: TermPos,
+    },
     /// Invalid or-pattern.
     ///
     /// This error is raised when the patterns composing an or-pattern don't have the precise
@@ -402,6 +523,13 @@ pub enum TypecheckError {
         /// The position of the whole or-pattern.
         pos: TermPos,
     },
+    /// An error occured during the resolution of an import.
+    ///
+    /// Since RFC007, imports aren't pre-processed anymore, and import resolution can happen
+    /// interleaved with typechecking. In particular, in order to typecheck expressions of the form
+    /// `import "file.ncl"`, the typechecker might ask to resolve the import, which can lead to any
+    /// import error.
+    ImportError(ImportError),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
@@ -455,15 +583,11 @@ impl From<Vec<ParseError>> for ParseErrors {
     }
 }
 
-impl IntoDiagnostics<FileId> for ParseErrors {
-    fn into_diagnostics(
-        self,
-        files: &mut Files<String>,
-        stdlib_ids: Option<&Vec<FileId>>,
-    ) -> Vec<Diagnostic<FileId>> {
+impl IntoDiagnostics for ParseErrors {
+    fn into_diagnostics(self, files: &mut Files) -> Vec<Diagnostic<FileId>> {
         self.errors
             .into_iter()
-            .flat_map(|e| e.into_diagnostics(files, stdlib_ids))
+            .flat_map(|e| e.into_diagnostics(files))
             .collect()
     }
 }
@@ -516,6 +640,8 @@ pub enum ParseError {
     /// A recursive let pattern was encountered. They are not currently supported because we
     /// decided it was too involved to implement them.
     RecursiveLetPattern(RawSpan),
+    /// Let blocks can currently only contain plain bindings, not pattern bindings.
+    PatternInLetBlock(RawSpan),
     /// A type variable is used in ways that imply it has muiltiple different kinds.
     ///
     /// This can happen in several situations, for example:
@@ -557,6 +683,13 @@ pub enum ParseError {
         /// The previous instance of the duplicated identifier.
         prev_ident: LocIdent,
     },
+    /// A duplicate binding was encountered in a let block.
+    DuplicateIdentInLetBlock {
+        /// The duplicate identifier.
+        ident: LocIdent,
+        /// The previous instance of the duplicated identifier.
+        prev_ident: LocIdent,
+    },
     /// There was an attempt to use a feature that hasn't been enabled.
     DisabledFeature { feature: String, span: RawSpan },
     /// A term was used as a contract in type position, but this term has no chance to make any
@@ -564,6 +697,30 @@ pub enum ParseError {
     /// time, there are a set of expressions that can be excluded syntactically. Currently, it's
     /// mostly constants.
     InvalidContract(RawSpan),
+    /// Unrecognized explicit import format tag
+    InvalidImportFormat { span: RawSpan },
+    /// A CLI sigil expression such as `@env:FOO` is invalid because no `:` separator was found.
+    SigilExprMissingColon(RawSpan),
+    /// A CLI sigil expression is unknown or unsupported, such as `@unknown:value`.
+    UnknownSigilSelector { selector: String, span: RawSpan },
+    /// A CLI sigil attribute is unknown or unsupported, such as `@file/unsupported:value`.
+    UnknownSigilAttribute {
+        selector: String,
+        attribute: String,
+        span: RawSpan,
+    },
+    /// An included field has several definitions. While we could just merge both at runtime like a
+    /// piecewise field definition, we entirely forbid this situation for now.
+    MultipleFieldDecls {
+        /// The identifier.
+        ident: Ident,
+        /// The identifier and the position of the include expression. The ident part is the same
+        /// as the ident part of `ident`.
+        include_span: RawSpan,
+        /// The span of the other declaration, which can be either a field
+        /// definition or an include expression as well.
+        other_span: RawSpan,
+    },
 }
 
 /// An error occurring during the resolution of an import.
@@ -580,6 +737,17 @@ pub enum ImportError {
         /* error */ ParseErrors,
         /* import position */ TermPos,
     ),
+    /// A package dependency was not found.
+    MissingDependency {
+        /// The package that tried to import the missing dependency, if there was one.
+        /// This will be `None` if the missing dependency was from the top-level
+        parent: Option<std::path::PathBuf>,
+        /// The name of the package that could not be resolved.
+        missing: Ident,
+        pos: TermPos,
+    },
+    /// They tried to import a file from a package, but no package manifest was supplied.
+    NoPackageMap { pos: TermPos },
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -690,6 +858,14 @@ impl From<ExportError> for EvalError {
     }
 }
 
+impl From<ImportError> for TypecheckError {
+    fn from(error: ImportError) -> Self {
+        TypecheckError::new(AstAlloc::new(), |_alloc| {
+            TypecheckErrorData::ImportError(error)
+        })
+    }
+}
+
 /// Return an escaped version of a string. Used to sanitize strings before inclusion in error
 /// messages, which can contain ASCII code sequences, and in particular ANSI escape codes, that
 /// could alter Nickel's error messages.
@@ -769,6 +945,7 @@ impl ParseError {
                 InternalParseError::RecursiveLetPattern(pos) => {
                     ParseError::RecursiveLetPattern(pos)
                 }
+                InternalParseError::PatternInLetBlock(pos) => ParseError::PatternInLetBlock(pos),
                 InternalParseError::TypeVariableKindMismatch { ty_var, span } => {
                     ParseError::TypeVariableKindMismatch { ty_var, span }
                 }
@@ -782,6 +959,9 @@ impl ParseError {
                 InternalParseError::DuplicateIdentInRecordPattern { ident, prev_ident } => {
                     ParseError::DuplicateIdentInRecordPattern { ident, prev_ident }
                 }
+                InternalParseError::DuplicateIdentInLetBlock { ident, prev_ident } => {
+                    ParseError::DuplicateIdentInLetBlock { ident, prev_ident }
+                }
                 InternalParseError::DisabledFeature { feature, span } => {
                     ParseError::DisabledFeature { feature, span }
                 }
@@ -792,15 +972,23 @@ impl ParseError {
                     }
                 }
                 InternalParseError::InvalidContract(span) => ParseError::InvalidContract(span),
+                InternalParseError::InvalidImportFormat { span } => {
+                    ParseError::InvalidImportFormat { span }
+                }
+                InternalParseError::MultipleFieldDecls {
+                    ident,
+                    include_span,
+                    other_span,
+                } => ParseError::MultipleFieldDecls {
+                    ident,
+                    include_span,
+                    other_span,
+                },
             },
         }
     }
 
-    pub fn from_serde_json(
-        error: serde_json::Error,
-        file_id: FileId,
-        files: &Files<String>,
-    ) -> Self {
+    pub fn from_serde_json(error: serde_json::Error, file_id: FileId, files: &Files) -> Self {
         use codespan::ByteOffset;
 
         // error.line() should start at `1` according to the documentation, but in practice, it may
@@ -810,10 +998,11 @@ impl ParseError {
         let line_span = if error.line() == 0 {
             None
         } else {
-            files.line_span(file_id, (error.line() - 1) as u32).ok()
+            files.line_index(file_id, error.line() - 1).ok()
         };
 
-        let start = line_span.map(|ls| ls.start() + ByteOffset::from(error.column() as i64 - 1));
+        let start =
+            line_span.map(|ls| ByteIndex::from(((ls + error.column()) as u32).saturating_sub(1)));
         ParseError::ExternalFormatError(
             String::from("json"),
             error.to_string(),
@@ -825,25 +1014,22 @@ impl ParseError {
         )
     }
 
-    pub fn from_serde_yaml(error: serde_yaml::Error, file_id: FileId) -> Self {
+    pub fn from_yaml(error: saphyr_parser::ScanError, file_id: Option<FileId>) -> Self {
         use codespan::{ByteIndex, ByteOffset};
 
-        let start = error
-            .location()
-            .map(|loc| loc.index() as u32)
-            .map(ByteIndex::from);
+        let start = ByteIndex::from(error.marker().index() as u32);
         ParseError::ExternalFormatError(
             String::from("yaml"),
             error.to_string(),
-            start.map(|start| RawSpan {
-                src_id: file_id,
+            file_id.map(|src_id| RawSpan {
+                src_id,
                 start,
                 end: start + ByteOffset::from(1),
             }),
         )
     }
 
-    pub fn from_toml(error: toml::de::Error, file_id: FileId) -> Self {
+    pub fn from_toml(error: toml_edit::TomlError, file_id: FileId) -> Self {
         use codespan::{ByteIndex, ByteOffset};
 
         let span = error.span();
@@ -866,20 +1052,19 @@ impl ParseError {
 }
 
 pub const INTERNAL_ERROR_MSG: &str =
-    "This error should not happen. This is likely a bug in the Nickel interpreter. Please consider\
+    "This error should not happen. This is likely a bug in the Nickel interpreter. Please consider \
  reporting it at https://github.com/tweag/nickel/issues with the above error message.";
 
 /// A trait for converting an error to a diagnostic.
-pub trait IntoDiagnostics<FileId> {
+pub trait IntoDiagnostics {
     /// Convert an error to a list of printable formatted diagnostic.
     ///
     /// # Arguments
     ///
-    /// - `files`: to know why it takes a mutable reference to `Files<String>`, see
-    ///   `label_alt`.
-    /// - `stdlib_ids` is required to format the callstack when reporting blame errors. For some
-    ///   errors (such as [`ParseError`])), contracts may not have been loaded yet, hence the
-    ///   optional. See also [`crate::eval::callstack::CallStack::group_by_calls`].
+    /// - `files`: this is a mutable reference to allow insertion of temporary snippets. Note that
+    ///   `Files` is cheaply clonable and copy-on-write, so you can easily get a mutable `Files` from
+    ///   a non-mutable one, but bear in mind that the returned diagnostics may contains file ids that
+    ///   refer to your mutated files.
     ///
     /// # Return
     ///
@@ -887,20 +1072,12 @@ pub trait IntoDiagnostics<FileId> {
     /// ordered requires to sidestep a limitation of codespan. The current solution is to generate
     /// one diagnostic per callstack element. See issue
     /// [#285](https://github.com/brendanzab/codespan/issues/285).
-    fn into_diagnostics(
-        self,
-        files: &mut Files<String>,
-        stdlib_ids: Option<&Vec<FileId>>,
-    ) -> Vec<Diagnostic<FileId>>;
+    fn into_diagnostics(self, files: &mut Files) -> Vec<Diagnostic<FileId>>;
 }
 
 // Allow the use of a single `Diagnostic` directly as an error that can be reported by Nickel.
-impl<FileId> IntoDiagnostics<FileId> for Diagnostic<FileId> {
-    fn into_diagnostics(
-        self,
-        _files: &mut Files<String>,
-        _stdlib_ids: Option<&Vec<FileId>>,
-    ) -> Vec<Diagnostic<FileId>> {
+impl IntoDiagnostics for Diagnostic<FileId> {
+    fn into_diagnostics(self, _files: &mut Files) -> Vec<Diagnostic<FileId>> {
         vec![self]
     }
 }
@@ -951,7 +1128,7 @@ fn secondary(span: &RawSpan) -> Label<FileId> {
 ///    additional text placed at the end of diagnostic. What you lose:
 ///     - pretty formatting of annotations for such snippets
 ///     - style consistency: the style of the error now depends on the term being from the source or
-///     a byproduct of evaluation
+///       a byproduct of evaluation
 /// 3. Add the term to files, take 1: pass a reference to files so that the code building the
 ///    diagnostic can itself add arbitrary snippets if necessary, and get back their `FileId`. This
 ///    is what is done here.
@@ -967,7 +1144,7 @@ fn label_alt(
     span_opt: Option<RawSpan>,
     alt_term: String,
     style: LabelStyle,
-    files: &mut Files<String>,
+    files: &mut Files,
 ) -> Label<FileId> {
     match span_opt {
         Some(span) => Label::new(
@@ -986,11 +1163,7 @@ fn label_alt(
 /// snippet `alt_term` if the span is `None`.
 ///
 /// See [`label_alt`].
-fn primary_alt(
-    span_opt: Option<RawSpan>,
-    alt_term: String,
-    files: &mut Files<String>,
-) -> Label<FileId> {
+fn primary_alt(span_opt: Option<RawSpan>, alt_term: String, files: &mut Files) -> Label<FileId> {
     label_alt(span_opt, alt_term, LabelStyle::Primary, files)
 }
 
@@ -998,7 +1171,7 @@ fn primary_alt(
 /// term if its span is `None`.
 ///
 /// See [`label_alt`].
-fn primary_term(term: &RichTerm, files: &mut Files<String>) -> Label<FileId> {
+fn primary_term(term: &RichTerm, files: &mut Files) -> Label<FileId> {
     primary_alt(term.pos.into_opt(), term.to_string(), files)
 }
 
@@ -1006,7 +1179,7 @@ fn primary_term(term: &RichTerm, files: &mut Files<String>) -> Label<FileId> {
 /// snippet `alt_term` if the span is `None`.
 ///
 /// See [`label_alt`].
-fn secondary_alt(span_opt: TermPos, alt_term: String, files: &mut Files<String>) -> Label<FileId> {
+fn secondary_alt(span_opt: TermPos, alt_term: String, files: &mut Files) -> Label<FileId> {
     label_alt(span_opt.into_opt(), alt_term, LabelStyle::Secondary, files)
 }
 
@@ -1014,7 +1187,7 @@ fn secondary_alt(span_opt: TermPos, alt_term: String, files: &mut Files<String>)
 /// this term if its span is `None`.
 ///
 /// See [`label_alt`].
-fn secondary_term(term: &RichTerm, files: &mut Files<String>) -> Label<FileId> {
+fn secondary_term(term: &RichTerm, files: &mut Files) -> Label<FileId> {
     secondary_alt(term.pos, term.to_string(), files)
 }
 
@@ -1031,47 +1204,32 @@ fn cardinal(number: usize) -> String {
     format!("{number}{suffix}")
 }
 
-impl IntoDiagnostics<FileId> for Error {
-    fn into_diagnostics(
-        self,
-        files: &mut Files<String>,
-        stdlib_ids: Option<&Vec<FileId>>,
-    ) -> Vec<Diagnostic<FileId>> {
+impl IntoDiagnostics for Error {
+    fn into_diagnostics(self, files: &mut Files) -> Vec<Diagnostic<FileId>> {
         match self {
             Error::ParseErrors(errs) => errs
                 .errors
                 .into_iter()
-                .flat_map(|e| e.into_diagnostics(files, stdlib_ids))
+                .flat_map(|e| e.into_diagnostics(files))
                 .collect(),
-            Error::TypecheckError(err) => err.into_diagnostics(files, stdlib_ids),
-            Error::EvalError(err) => err.into_diagnostics(files, stdlib_ids),
-            Error::ImportError(err) => err.into_diagnostics(files, stdlib_ids),
-            Error::ExportError(err) => err.into_diagnostics(files, stdlib_ids),
-            Error::IOError(err) => err.into_diagnostics(files, stdlib_ids),
-            Error::ReplError(err) => err.into_diagnostics(files, stdlib_ids),
+            Error::TypecheckError(err) => err.into_diagnostics(files),
+            Error::EvalError(err) => err.into_diagnostics(files),
+            Error::ImportError(err) => err.into_diagnostics(files),
+            Error::ExportError(err) => err.into_diagnostics(files),
+            Error::IOError(err) => err.into_diagnostics(files),
+            Error::ReplError(err) => err.into_diagnostics(files),
         }
     }
 }
 
-impl IntoDiagnostics<FileId> for EvalError {
-    fn into_diagnostics(
-        self,
-        files: &mut Files<String>,
-        stdlib_ids: Option<&Vec<FileId>>,
-    ) -> Vec<Diagnostic<FileId>> {
+impl IntoDiagnostics for EvalError {
+    fn into_diagnostics(self, files: &mut Files) -> Vec<Diagnostic<FileId>> {
         match self {
             EvalError::BlameError {
                 evaluated_arg,
                 label,
                 call_stack,
-            } => blame_error::blame_diagnostics(
-                files,
-                stdlib_ids,
-                label,
-                evaluated_arg,
-                &call_stack,
-                "",
-            ),
+            } => blame_error::blame_diagnostics(files, label, evaluated_arg, &call_stack, ""),
             EvalError::MissingFieldDef {
                 id,
                 metadata,
@@ -1080,55 +1238,71 @@ impl IntoDiagnostics<FileId> for EvalError {
             } => {
                 let mut labels = vec![];
 
-                if let Some(span) = id.pos.into_opt() {
-                    labels.push(primary(&span).with_message("required here"));
-                }
-
-                if let Some(span) = pos_record.into_opt() {
-                    labels.push(secondary(&span).with_message("in this record"));
-                }
-
-                if let Some(span) = pos_access.into_opt() {
-                    labels.push(secondary(&span).with_message("accessed here"));
-                }
-
-                let mut diags = vec![Diagnostic::error()
-                    .with_message(format!("missing definition for `{id}`",))
-                    .with_labels(labels)];
-
-                // Is it really useful to include the label if we show the position of the ident?
-                // We have to see in practice if it can be the case that `id.pos` is
-                // `TermPos::None`, but the label is defined.
+                // If there's a contract attached to the missing field, point the error message
+                // at the contract instead of the access. This seems like a more useful error,
+                // because if someone hands you a `x | { fld | String }` and you call `x.fld`,
+                // then the `x.fld` shouldn't be blamed if `fld` is missing: we should point
+                // at the original `x` and at the `fld` in the record contract.
                 if let Some(label) = metadata
                     .annotation
                     .first()
                     .map(|labeled_ty| labeled_ty.label.clone())
                 {
-                    diags.push(blame_error::contract_bind_loc(&label));
+                    if let Some(span) = label.field_name.and_then(|id| id.pos.into_opt()) {
+                        labels.push(primary(&span).with_message("required here"));
+                    }
+
+                    if let Some(span) = pos_record.into_opt() {
+                        labels.push(secondary(&span).with_message("in this record"));
+                    }
+
+                    // In this branch, we don't point at the access location because it
+                    // isn't to blame.
+                } else {
+                    if let Some(span) = id.pos.into_opt() {
+                        labels.push(primary(&span).with_message("required here"));
+                    }
+
+                    if let Some(span) = pos_record.into_opt() {
+                        labels.push(secondary(&span).with_message("in this record"));
+                    }
+
+                    if let Some(span) = pos_access.into_opt() {
+                        labels.push(secondary(&span).with_message("accessed here"));
+                    }
                 }
+
+                let diags = vec![Diagnostic::error()
+                    .with_message(format!("missing definition for `{id}`",))
+                    .with_labels(labels)];
 
                 diags
             }
-            EvalError::TypeError(expd, msg, pos_orig, t) => {
+            EvalError::TypeError {
+                expected,
+                message,
+                orig_pos,
+                term: t,
+            } => {
                 let label = format!(
                     "this expression has type {}, but {} was expected",
                     t.term
                         .type_of()
                         .unwrap_or_else(|| String::from("<unevaluated>")),
-                    expd,
+                    expected,
                 );
 
-                let labels = match (pos_orig.into_opt(), t.pos.into_opt()) {
+                let labels = match (orig_pos.into_opt(), t.pos.into_opt()) {
                     (Some(span_orig), Some(span_t)) if span_orig == span_t => {
                         vec![primary(&span_orig).with_message(label)]
                     }
-                    (Some(span_orig), Some(_)) => {
+                    (Some(span_orig), Some(t_pos)) if !files.is_stdlib(t_pos.src_id) => {
                         vec![
                             primary(&span_orig).with_message(label),
                             secondary_term(&t, files).with_message("evaluated to this"),
                         ]
                     }
-                    (Some(span), None) => {
+                    (Some(span), _) => {
                         vec![primary(&span).with_message(label)]
                     }
                     (None, Some(span)) => {
@@ -1142,15 +1316,15 @@ impl IntoDiagnostics<FileId> for EvalError {
                 vec![Diagnostic::error()
                     .with_message("dynamic type error")
                     .with_labels(labels)
-                    .with_notes(vec![msg])]
+                    .with_notes(vec![message])]
             }
-            EvalError::ParseError(parse_error) => parse_error.into_diagnostics(files, stdlib_ids),
+            EvalError::ParseError(parse_error) => parse_error.into_diagnostics(files),
             EvalError::NotAFunc(t, arg, pos_opt) => vec![Diagnostic::error()
                 .with_message("not a function")
                 .with_labels(vec![
                     primary_term(&t, files)
                         .with_message("this term is applied, but it is not a function"),
-                    secondary_alt(pos_opt, format!("({}) ({})", t, arg), files)
+                    secondary_alt(pos_opt, format!("({t}) ({arg})"), files)
                         .with_message("applied here"),
                 ])],
             EvalError::FieldMissing {
@@ -1228,7 +1402,9 @@ impl IntoDiagnostics<FileId> for EvalError {
                     MergeKind::PiecewiseDef => "when combining the definitions of this field",
                 };
 
-                labels.push(secondary(&merge_label.span).with_message(span_label));
+                if let Some(merge_label_span) = &merge_label.span {
+                    labels.push(secondary(merge_label_span).with_message(span_label));
+                }
 
                 fn push_merge_note(notes: &mut Vec<String>, typ: &str) {
                     notes.push(format!(
@@ -1354,7 +1530,7 @@ impl IntoDiagnostics<FileId> for EvalError {
                     .with_labels(labels)
                     .with_notes(vec![String::from(INTERNAL_ERROR_MSG)])]
             }
-            EvalError::SerializationError(err) => err.into_diagnostics(files, stdlib_ids),
+            EvalError::SerializationError(err) => err.into_diagnostics(files),
             EvalError::DeserializationError(format, msg, span_opt) => {
                 let labels = span_opt
                     .as_opt_ref()
@@ -1365,28 +1541,53 @@ impl IntoDiagnostics<FileId> for EvalError {
                     .with_message(format!("{format} parse error: {msg}"))
                     .with_labels(labels)]
             }
-            EvalError::EqError { eq_pos, term: t } => {
-                let label = format!(
-                    "an argument has type {}, which cannot be compared for equality",
-                    t.term
-                        .type_of()
-                        .unwrap_or_else(|| String::from("<unevaluated>")),
-                );
-
-                let labels = match eq_pos {
-                    TermPos::Original(pos) | TermPos::Inherited(pos) if eq_pos != t.pos => {
-                        vec![
-                            primary(&pos).with_message(label),
-                            secondary_term(&t, files)
-                                .with_message("problematic argument evaluated to this"),
-                        ]
+            EvalError::DeserializationErrorWithInner { format, inner, pos } => {
+                let mut diags = inner.into_diagnostics(files);
+                if let Some(diag) = diags.first_mut() {
+                    if let Some(span) = pos.as_opt_ref() {
+                        diag.labels
+                            .push(secondary(span).with_message("deserialized here"));
                     }
-                    _ => vec![primary_term(&t, files).with_message(label)],
+                    diag.notes.push(format!("while parsing {format}"));
+                }
+                diags
+            }
+            EvalError::IncomparableValues {
+                eq_pos,
+                left,
+                right,
+            } => {
+                let mut labels = Vec::new();
+
+                if let Some(span) = eq_pos.as_opt_ref() {
+                    labels.push(primary(span).with_message("in this equality comparison"));
+                }
+
+                // Push the label for the right or left argument and return the type of said
+                // argument.
+                let mut push_label = |prefix: &str, term: &RichTerm| -> String {
+                    let type_of = term
+                        .term
+                        .type_of()
+                        .unwrap_or_else(|| String::from("<unevaluated>"));
+
+                    labels.push(
+                        secondary_term(term, files)
+                            .with_message(format!("{prefix} argument has type {type_of}")),
+                    );
+
+                    type_of
                 };
+
+                let left_type = push_label("left", &left);
+                let right_type = push_label("right", &right);
 
                 vec![Diagnostic::error()
                     .with_message("cannot compare values for equality")
-                    .with_labels(labels)]
+                    .with_labels(labels)
+                    .with_notes(vec![format!(
+                        "A {left_type} can't be meaningfully compared with a {right_type}"
+                    )])]
             }
             EvalError::NonExhaustiveEnumMatch {
                 expected,
@@ -1437,6 +1638,20 @@ impl IntoDiagnostics<FileId> for EvalError {
                     .with_message("unmatched pattern")
                     .with_labels(labels)]
             }
+            EvalError::FailedDestructuring { value, pattern } => {
+                let mut labels = Vec::new();
+
+                if let Some(span) = pattern.pos.into_opt() {
+                    labels.push(primary(&span).with_message("this pattern"));
+                }
+
+                labels
+                    .push(secondary_term(&value, files).with_message("this value failed to match"));
+
+                vec![Diagnostic::error()
+                    .with_message("destructuring failed")
+                    .with_labels(labels)]
+            }
             EvalError::IllegalPolymorphicTailAccess {
                 action,
                 label: contract_label,
@@ -1444,7 +1659,6 @@ impl IntoDiagnostics<FileId> for EvalError {
                 call_stack,
             } => blame_error::blame_diagnostics(
                 files,
-                stdlib_ids,
                 contract_label,
                 evaluated_arg,
                 &call_stack,
@@ -1452,32 +1666,71 @@ impl IntoDiagnostics<FileId> for EvalError {
             ),
             EvalError::UnaryPrimopTypeError {
                 primop,
-                ref expected,
+                expected,
                 arg_pos,
                 arg_evaluated,
-            } => EvalError::TypeError(
-                expected.clone(),
-                format!("{primop} expects its argument to be a {expected}"),
-                arg_pos,
-                arg_evaluated,
-            )
-            .into_diagnostics(files, stdlib_ids),
+            } => EvalError::TypeError {
+                message: format!("{primop} expects its argument to be a {expected}"),
+                expected,
+                orig_pos: arg_pos,
+                term: arg_evaluated,
+            }
+            .into_diagnostics(files),
             EvalError::NAryPrimopTypeError {
                 primop,
                 expected,
                 arg_number,
                 arg_pos,
                 arg_evaluated,
-            } => EvalError::TypeError(
-                expected.clone(),
-                format!(
-                    "{primop} expects its {} argument to be a {expected}",
-                    cardinal(arg_number)
-                ),
-                arg_pos,
-                arg_evaluated,
-            )
-            .into_diagnostics(files, stdlib_ids),
+                op_pos,
+            } => {
+                // The parsing of binary subtraction vs unary negation has
+                // proven confusing in practice; for example, `add 1 -1` is
+                // parsed as `(add 1) - 1`, so the `-` is a subtraction and
+                // triggers a type error because `(add 1)` is not a number.
+                //
+                // We attempt to provide a useful hint for this case.
+                //
+                // We don't currently attempt to give a good hint for
+                // `add -1 1` (parsed as `add - (1 1)`) because the evaluation
+                // error hits in a context (the `(1 1)`) where we don't see
+                // the `-`.
+                let minus_pos = if primop == "(-)"
+                    && arg_number == 1
+                    && arg_evaluated.term.type_of().as_deref() == Some("Function")
+                {
+                    op_pos.into_opt()
+                } else {
+                    None
+                };
+
+                let diags = EvalError::TypeError {
+                    message: format!(
+                        "{primop} expects its {} argument to be a {expected}",
+                        cardinal(arg_number)
+                    ),
+                    expected,
+                    orig_pos: arg_pos,
+                    term: arg_evaluated,
+                }
+                .into_diagnostics(files);
+
+                if let Some(minus_pos) = minus_pos {
+                    let label = secondary(&minus_pos)
+                        .with_message("this expression was parsed as a binary subtraction");
+                    diags
+                        .into_iter()
+                        .map(|d| {
+                            d.with_label(label.clone())
+                                .with_note(
+                                    "for unary negation, add parentheses: write `(-42)` instead of `-42`",
+                                )
+                        })
+                        .collect()
+                } else {
+                    diags
+                }
+            }
             EvalError::QueryNonRecord { pos, id, value } => {
                 let label = format!(
                     "tried to query field `{}`, but the expression has type {}",
@@ -1504,11 +1757,11 @@ impl IntoDiagnostics<FileId> for EvalError {
 
 /// Common functionality for formatting blame errors.
 mod blame_error {
-    use codespan::{FileId, Files};
     use codespan_reporting::diagnostic::{Diagnostic, Label};
 
     use crate::{
         eval::callstack::CallStack,
+        files::{FileId, Files},
         label::{
             self,
             ty_path::{self, PathSpan},
@@ -1550,8 +1803,7 @@ mod blame_error {
         evaluated_arg: Option<RichTerm>,
         blame_label: &label::Label,
         path_label: Label<FileId>,
-        files: &mut Files<String>,
-        stdlib_ids: Option<&Vec<FileId>>,
+        files: &mut Files,
     ) -> Vec<Label<FileId>> {
         let mut labels = vec![path_label];
 
@@ -1561,11 +1813,7 @@ mod blame_error {
             // point to the builtin implementation contract like `func` or `record`, so
             // there's no good reason to show it. Note than even in that case, the
             // information contained at the argument index can still be useful.
-            if stdlib_ids
-                .as_ref()
-                .map(|ctrs_id| !ctrs_id.contains(&arg_pos.src_id))
-                .unwrap_or(true)
-            {
+            if !files.is_stdlib(arg_pos.src_id) {
                 labels.push(primary(arg_pos).with_message("applied to this expression"));
             }
         }
@@ -1574,14 +1822,10 @@ mod blame_error {
         // we can try to show more information about the final, evaluated value that is
         // responsible for the blame.
         if let Some(mut evaluated_arg) = evaluated_arg {
-            match (
-                evaluated_arg.pos,
-                blame_label.arg_pos.as_opt_ref(),
-                stdlib_ids,
-            ) {
+            match (evaluated_arg.pos, blame_label.arg_pos.as_opt_ref()) {
                 // Avoid showing a position inside builtin contracts, it's rarely
                 // informative.
-                (TermPos::Original(val_pos), _, Some(c_id)) if c_id.contains(&val_pos.src_id) => {
+                (TermPos::Original(val_pos), _) if files.is_stdlib(val_pos.src_id) => {
                     evaluated_arg.pos = TermPos::None;
                     labels.push(
                         secondary_term(&evaluated_arg, files)
@@ -1590,14 +1834,14 @@ mod blame_error {
                 }
                 // Do not show the same thing twice: if arg_pos and val_pos are the same,
                 // the first label "applied to this value" is sufficient.
-                (TermPos::Original(ref val_pos), Some(arg_pos), _) if val_pos == arg_pos => {}
-                (TermPos::Original(ref val_pos), ..) => {
+                (TermPos::Original(ref val_pos), Some(arg_pos)) if val_pos == arg_pos => {}
+                (TermPos::Original(ref val_pos), _) => {
                     labels.push(secondary(val_pos).with_message("evaluated to this expression"))
                 }
                 // If the final element is a direct reduct of the original value, rather
                 // print the actual value than referring to the same position as
                 // before.
-                (TermPos::Inherited(ref val_pos), Some(arg_pos), _) if val_pos == arg_pos => {
+                (TermPos::Inherited(ref val_pos), Some(arg_pos)) if val_pos == arg_pos => {
                     evaluated_arg.pos = TermPos::None;
                     labels.push(
                         secondary_term(&evaluated_arg, files)
@@ -1606,12 +1850,8 @@ mod blame_error {
                 }
                 // Finally, if the parameter reduced to a value which originates from a
                 // different expression, show both the expression and the value.
-                (TermPos::Inherited(ref val_pos), _, ids) => {
-                    if ids
-                        .as_ref()
-                        .map(|cids| !cids.contains(&val_pos.src_id))
-                        .unwrap_or(true)
-                    {
+                (TermPos::Inherited(ref val_pos), _) => {
+                    if !files.is_stdlib(val_pos.src_id) {
                         labels
                             .push(secondary(val_pos).with_message("evaluated to this expression"));
                     }
@@ -1622,7 +1862,7 @@ mod blame_error {
                             .with_message("evaluated to this value"),
                     );
                 }
-                (TermPos::None, ..) => labels.push(
+                (TermPos::None, _) => labels.push(
                     secondary_term(&evaluated_arg, files).with_message("evaluated to this value"),
                 ),
             }
@@ -1632,12 +1872,12 @@ mod blame_error {
     }
 
     pub trait ExtendWithCallStack {
-        fn extend_with_call_stack(&mut self, stdlib_ids: &[FileId], call_stack: &CallStack);
+        fn extend_with_call_stack(&mut self, files: &Files, call_stack: &CallStack);
     }
 
     impl ExtendWithCallStack for Vec<Diagnostic<FileId>> {
-        fn extend_with_call_stack(&mut self, stdlib_ids: &[FileId], call_stack: &CallStack) {
-            let (calls, curr_call) = call_stack.group_by_calls(stdlib_ids);
+        fn extend_with_call_stack(&mut self, files: &Files, call_stack: &CallStack) {
+            let (calls, curr_call) = call_stack.group_by_calls(files);
             let diag_curr_call = curr_call.map(|cdescr| {
                 let name = cdescr
                     .head
@@ -1666,16 +1906,16 @@ mod blame_error {
     /// subtype isn't defined), [path_span] pretty-prints the type inside a new source, parses it,
     /// and calls `ty_path::span`. This new type is guaranteed to have all of its positions set,
     /// providing a definite `PathSpan`. This is similar to the behavior of [`super::primary_alt`].
-    pub fn path_span(files: &mut Files<String>, path: &[ty_path::Elem], ty: &Type) -> PathSpan {
-        use crate::parser::{grammar::FixedTypeParser, lexer::Lexer, ErrorTolerantParser};
+    pub fn path_span(files: &mut Files, path: &[ty_path::Elem], ty: &Type) -> PathSpan {
+        use crate::parser::{grammar::FixedTypeParser, lexer::Lexer, ErrorTolerantParserCompat};
 
         ty_path::span(path.iter().peekable(), ty)
             .or_else(|| {
                 let type_pprinted = format!("{ty}");
                 let file_id = files.add(super::UNKNOWN_SOURCE_NAME, type_pprinted.clone());
 
-                let ty_with_pos = FixedTypeParser::new()
-                    .parse_strict(file_id, Lexer::new(&type_pprinted))
+                let (ty_with_pos, _) = FixedTypeParser::new()
+                    .parse_tolerant_compat(file_id, Lexer::new(&type_pprinted))
                     .unwrap();
 
                 ty_path::span(path.iter().peekable(), &ty_with_pos)
@@ -1688,7 +1928,7 @@ mod blame_error {
 
     /// Generate a codespan label that describes the [type path][crate::label::ty_path::Path] of a
     /// (Nickel) label.
-    pub fn report_ty_path(files: &mut Files<String>, l: &label::Label) -> Label<FileId> {
+    pub fn report_ty_path(files: &mut Files, l: &label::Label) -> Label<FileId> {
         let PathSpan {
             span,
             last,
@@ -1747,15 +1987,6 @@ is None but last_arrow_elem is Some"
         secondary(&span).with_message(msg.to_owned())
     }
 
-    /// Return a note diagnostic showing where a contract was bound.
-    pub fn contract_bind_loc(l: &label::Label) -> Diagnostic<FileId> {
-        Diagnostic::note().with_labels(vec![Label::primary(
-            l.span.src_id,
-            l.span.start.to_usize()..l.span.end.to_usize(),
-        )
-        .with_message("bound here")])
-    }
-
     /// Generate codespan diagnostics from blame data. Mostly used by `into_diagnostics`
     /// implementations.
     ///
@@ -1765,8 +1996,7 @@ is None but last_arrow_elem is Some"
     /// leading "contract broken by .." and the custom contract diagnostic message in tail
     /// position.
     pub fn blame_diagnostics(
-        files: &mut Files<String>,
-        stdlib_ids: Option<&Vec<FileId>>,
+        files: &mut Files,
         mut label: label::Label,
         evaluated_arg: Option<RichTerm>,
         call_stack: &CallStack,
@@ -1810,7 +2040,7 @@ is None but last_arrow_elem is Some"
             .unwrap_or_default();
         let path_label = report_ty_path(files, &label);
 
-        let labels = build_diagnostic_labels(evaluated_arg, &label, path_label, files, stdlib_ids);
+        let labels = build_diagnostic_labels(evaluated_arg, &label, path_label, files);
 
         // If there are notes in the head contract diagnostic, we build the first
         // diagnostic using them and will put potential generated notes on higher-order
@@ -1841,26 +2071,19 @@ is None but last_arrow_elem is Some"
             );
         }
 
-        match stdlib_ids {
-            Some(id) if !ty_path::has_no_dom(&label.path) => {
-                diagnostics.extend_with_call_stack(id, call_stack)
-            }
-            _ => (),
-        };
+        if !ty_path::has_no_dom(&label.path) {
+            diagnostics.extend_with_call_stack(files, call_stack);
+        }
 
         diagnostics
     }
 }
 
-impl IntoDiagnostics<FileId> for ParseError {
-    fn into_diagnostics(
-        self,
-        files: &mut Files<String>,
-        _stdlib_ids: Option<&Vec<FileId>>,
-    ) -> Vec<Diagnostic<FileId>> {
+impl IntoDiagnostics for ParseError {
+    fn into_diagnostics(self, files: &mut Files) -> Vec<Diagnostic<FileId>> {
         let diagnostic = match self {
             ParseError::UnexpectedEOF(file_id, _expected) => {
-                let end = files.source_span(file_id).end();
+                let end = files.source_span(file_id).end;
                 Diagnostic::error()
                     .with_message(format!(
                         "unexpected end of file when parsing {}",
@@ -1975,6 +2198,10 @@ impl IntoDiagnostics<FileId> for ParseError {
                         from within a field, so you might not need the recursive let."
                         .into(),
                 ]),
+            ParseError::PatternInLetBlock(span) => Diagnostic::error()
+                .with_message("destructuring patterns are not currently permitted in let blocks")
+                .with_labels(vec![primary(&span)])
+                .with_notes(vec!["Try re-writing your let block as nested `let ... in` expressions.".into()]),
             ParseError::TypeVariableKindMismatch { ty_var, span } => Diagnostic::error()
                 .with_message(format!(
                     "the type variable `{ty_var}` is used in conflicting ways"
@@ -2031,11 +2258,19 @@ impl IntoDiagnostics<FileId> for ParseError {
                     secondary(&prev_ident.pos.unwrap()).with_message("previous binding here"),
                     primary(&ident.pos.unwrap()).with_message("duplicated binding here"),
                 ]),
+            ParseError::DuplicateIdentInLetBlock { ident, prev_ident } => Diagnostic::error()
+                .with_message(format!(
+                    "duplicated binding `{}` in let block",
+                    ident.label()
+                ))
+                .with_labels(vec![
+                    secondary(&prev_ident.pos.unwrap()).with_message("previous binding here"),
+                    primary(&ident.pos.unwrap()).with_message("duplicated binding here"),
+                ]),
             ParseError::DisabledFeature { feature, span } => Diagnostic::error()
                 .with_message("interpreter compiled without required features")
                 .with_labels(vec![primary(&span).with_message(format!(
-                    "this syntax is only supported with the `{}` feature enabled",
-                    feature
+                    "this syntax is only supported with the `{feature}` feature enabled"
                 ))])
                 .with_notes(vec![format!(
                     "Recompile nickel with `--features {}`",
@@ -2049,18 +2284,65 @@ impl IntoDiagnostics<FileId> for ParseError {
                         .to_owned(),
                     "Only functions and records might be valid contracts".to_owned(),
                 ]),
+            ParseError::InvalidImportFormat{span} => Diagnostic::error()
+                .with_message("unknown import format tag")
+                .with_labels(vec![primary(&span)])
+                .with_notes(vec![
+                    "Examples of valid format tags: 'Nickel, 'Json, 'Yaml, 'Toml, 'Text"
+                        .to_owned()
+                ]),
+            ParseError::UnknownSigilSelector { selector, span } => {
+                Diagnostic::error()
+                .with_message(format!("unknown sigil selector `{selector}`"))
+                .with_labels(vec![primary(&span)])
+                .with_note("Available selectors are currently: `env`")
+            }
+            ParseError::UnknownSigilAttribute { selector, attribute, span } => {
+                Diagnostic::error()
+                .with_message(format!("unknown sigil attribute `{attribute}`"))
+                .with_labels(vec![primary(&span).with_message(format!("unknown attribute for sigil selector `{selector}`"))])
+                .with_note(available_sigil_attrs_note(&selector))
+            }
+            ParseError::SigilExprMissingColon(span) => {
+                Diagnostic::error()
+                .with_message("missing sigil expression separator `:`")
+                .with_labels(vec![primary(&span)])
+                .with_notes(vec![
+                    "The CLI sigil expression syntax is `@<selector>:<argument>` or `@<selector>/<attribute>:<argument>`".to_owned(),
+                    "The provided sigil expression is missing the `:` separator.".to_owned(),
+                ])
+            }
+            ParseError::MultipleFieldDecls { ident, include_span, other_span } => Diagnostic::error()
+                .with_message(format!(
+                    "multiple declarations for included field `{ident}`",
+                ))
+                .with_labels(vec![
+                    primary(&include_span).with_message("included here"),
+                    secondary(&other_span).with_message("but also declared here"),
+                ])
+                .with_notes(vec![
+                    "Piecewise definitions involving an included field are currently not supported".to_owned()
+                ]),
         };
 
         vec![diagnostic]
     }
 }
 
-impl IntoDiagnostics<FileId> for TypecheckError {
-    fn into_diagnostics(
-        self,
-        files: &mut Files<String>,
-        stdlib_ids: Option<&Vec<FileId>>,
-    ) -> Vec<Diagnostic<FileId>> {
+/// Returns the available attributes for each supported sigil
+// It's currently trivial, but might be expanded in the future
+fn available_sigil_attrs_note(selector: &str) -> String {
+    format!("No attributes are available for sigil selector `{selector}`. Use the selector directly as in `@{selector}:<argument>`")
+}
+
+impl IntoDiagnostics for TypecheckError {
+    fn into_diagnostics(self, files: &mut Files) -> Vec<Diagnostic<FileId>> {
+        self.borrow_error().into_diagnostics(files)
+    }
+}
+
+impl<'ast> IntoDiagnostics for &'_ TypecheckErrorData<'ast> {
+    fn into_diagnostics(self, files: &mut Files) -> Vec<Diagnostic<FileId>> {
         fn mk_expr_label(span_opt: &TermPos) -> Vec<Label<FileId>> {
             span_opt
                 .as_opt_ref()
@@ -2077,82 +2359,82 @@ impl IntoDiagnostics<FileId> for TypecheckError {
         }
 
         match self {
-            TypecheckError::UnboundIdentifier { id, pos } =>
+            TypecheckErrorData::UnboundIdentifier(id) =>
             // Use the same diagnostic as `EvalError::UnboundIdentifier` for consistency.
             {
-                EvalError::UnboundIdentifier(id, pos).into_diagnostics(files, stdlib_ids)
+                EvalError::UnboundIdentifier(*id, id.pos).into_diagnostics(files)
             }
-            TypecheckError::MissingRow {
+            TypecheckErrorData::MissingRow {
                 id,
                 expected,
                 inferred,
                 pos,
             } => vec![Diagnostic::error()
                 .with_message(format!("type error: missing row `{id}`"))
-                .with_labels(mk_expr_label(&pos))
+                .with_labels(mk_expr_label(pos))
                 .with_notes(vec![
                     format!(
                         "{}, which contains the field `{id}`",
-                        mk_expected_msg(&expected)
+                        mk_expected_msg(expected)
                     ),
                     format!(
                         "{}, which does not contain the field `{id}`",
-                        mk_inferred_msg(&inferred)
+                        mk_inferred_msg(inferred)
                     ),
                 ])],
-            TypecheckError::MissingDynTail {
+            TypecheckErrorData::MissingDynTail {
                 expected,
                 inferred,
                 pos,
             } => vec![Diagnostic::error()
                 .with_message(String::from("type error: missing dynamic tail `; Dyn`"))
-                .with_labels(mk_expr_label(&pos))
+                .with_labels(mk_expr_label(pos))
                 .with_notes(vec![
                     format!(
                         "{}, which contains the tail `; Dyn`",
-                        mk_expected_msg(&expected)
+                        mk_expected_msg(expected)
                     ),
                     format!(
                         "{}, which does not contain the tail `; Dyn`",
-                        mk_inferred_msg(&inferred)
+                        mk_inferred_msg(inferred)
                     ),
                 ])],
-            TypecheckError::ExtraRow {
+            TypecheckErrorData::ExtraRow {
                 id,
                 expected,
                 inferred,
                 pos,
             } => vec![Diagnostic::error()
                 .with_message(format!("type error: extra row `{id}`"))
-                .with_labels(mk_expr_label(&pos))
+                .with_labels(mk_expr_label(pos))
                 .with_notes(vec![
                     format!(
                         "{}, which does not contain the field `{id}`",
-                        mk_expected_msg(&expected)
+                        mk_expected_msg(expected)
                     ),
                     format!(
                         "{}, which contains the extra field `{id}`",
-                        mk_inferred_msg(&inferred)
+                        mk_inferred_msg(inferred)
                     ),
                 ])],
-            TypecheckError::ExtraDynTail {
+            TypecheckErrorData::ExtraDynTail {
                 expected,
                 inferred,
                 pos,
             } => vec![Diagnostic::error()
                 .with_message(String::from("type error: extra dynamic tail `; Dyn`"))
-                .with_labels(mk_expr_label(&pos))
+                .with_labels(mk_expr_label(pos))
                 .with_notes(vec![
                     format!(
                         "{}, which does not contain the tail `; Dyn`",
-                        mk_expected_msg(&expected)
+                        mk_expected_msg(expected)
                     ),
                     format!(
                         "{}, which contains the extra tail `; Dyn`",
-                        mk_inferred_msg(&inferred)
+                        mk_inferred_msg(inferred)
                     ),
                 ])],
-            TypecheckError::UnboundTypeVariable(ident) => vec![Diagnostic::error()
+            TypecheckErrorData::UnboundTypeVariable(ident) => vec![Diagnostic::error()
                 .with_message(format!("unbound type variable `{ident}`"))
                 .with_labels(vec![primary_alt(
                     ident.pos.into_opt(),
@@ -2163,19 +2445,19 @@ impl IntoDiagnostics<FileId> for TypecheckError {
                 .with_notes(vec![format!(
                     "Did you forget to put a `forall {ident}.` somewhere in the enclosing type?"
                 )])],
-            TypecheckError::TypeMismatch {
+            TypecheckErrorData::TypeMismatch {
                 expected,
                 inferred,
                 pos,
             } => {
-                fn addendum(ty: &Type) -> &str {
-                    if ty.typ.is_flat() {
+                fn addendum<'ast>(ty: &Type<'ast>) -> &'static str {
+                    if ty.typ.is_contract() {
                         " (a contract)"
                     } else {
                         ""
                     }
                 }
-                let last_note = if expected.typ.is_flat() ^ inferred.typ.is_flat() {
+                let last_note = if expected.typ.is_contract() ^ inferred.typ.is_contract() {
                     "Static types and contracts are not compatible"
                 } else {
                     "These types are not compatible"
@@ -2183,20 +2465,21 @@ impl IntoDiagnostics<FileId> for TypecheckError {
 
                 vec![Diagnostic::error()
                     .with_message("incompatible types")
-                    .with_labels(mk_expr_label(&pos))
+                    .with_labels(mk_expr_label(pos))
                     .with_notes(vec![
-                        format!("{}{}", mk_expected_msg(&expected), addendum(&expected),),
-                        format!("{}{}", mk_inferred_msg(&inferred), addendum(&inferred),),
+                        format!("{}{}", mk_expected_msg(expected), addendum(expected),),
+                        format!("{}{}", mk_inferred_msg(inferred), addendum(inferred),),
                         String::from(last_note),
                     ])]
             }
-            TypecheckError::RecordRowMismatch {
+            TypecheckErrorData::RecordRowMismatch {
                 id,
                 expected,
                 inferred,
-                cause: mut err,
+                cause: ref err,
                 pos,
             } => {
+                let mut err = err;
                 // If the unification error is on a nested field, we will have a succession of
                 // `RowMismatch` errors wrapping the underlying error. In this case, instead of
                 // showing a cascade of similar error messages, we determine the full path of the
@@ -2204,11 +2487,11 @@ impl IntoDiagnostics<FileId> for TypecheckError {
                 // error followed by the underlying error.
                 let mut path = vec![id.ident()];
 
-                while let TypecheckError::RecordRowMismatch {
+                while let TypecheckErrorData::RecordRowMismatch {
                     id: id_next,
                     cause: next,
                     ..
-                } = *err
+                } = &**err
                 {
                     path.push(id_next.ident());
                     err = next;
@@ -2245,12 +2528,12 @@ impl IntoDiagnostics<FileId> for TypecheckError {
                         None => mk_inferred_msg(&inferred),
                     }
                 } else {
-                    mk_inferred_msg(&inferred)
+                    mk_inferred_msg(inferred)
                 };
 
                 let mut diags = vec![Diagnostic::error()
                     .with_message("incompatible record rows declaration")
-                    .with_labels(mk_expr_label(&pos))
+                    .with_labels(mk_expr_label(pos))
                     .with_notes(vec![
                         note1,
                         note2,
@@ -2260,15 +2543,13 @@ impl IntoDiagnostics<FileId> for TypecheckError {
                 // We generate a diagnostic for the underlying error, but append a prefix to the
                 // error message to make it clear that this is not a separate error but a more
                 // precise description of why the unification of a row failed.
-                diags.extend((*err).into_diagnostics(files, stdlib_ids).into_iter().map(
-                    |mut diag| {
-                        diag.message = format!("while typing field `{}`: {}", field, diag.message);
-                        diag
-                    },
-                ));
+                diags.extend(err.into_diagnostics(files).into_iter().map(|mut diag| {
+                    diag.message = format!("while typing field `{}`: {}", field, diag.message);
+                    diag
+                }));
                 diags
             }
-            TypecheckError::EnumRowMismatch {
+            TypecheckErrorData::EnumRowMismatch {
                 id,
                 expected,
                 inferred,
@@ -2287,25 +2568,25 @@ impl IntoDiagnostics<FileId> for TypecheckError {
                     if let Some(row) = erows.find_row(id.ident()) {
                         mk_expected_row_msg(row)
                     } else {
-                        mk_expected_msg(&expected)
+                        mk_expected_msg(expected)
                     }
                 } else {
-                    mk_expected_msg(&expected)
+                    mk_expected_msg(expected)
                 };
 
                 let note2 = if let TypeF::Enum(erows) = &inferred.typ {
                     if let Some(row) = erows.find_row(id.ident()) {
                         mk_inferred_row_msg(row)
                     } else {
-                        mk_inferred_msg(&expected)
+                        mk_inferred_msg(expected)
                     }
                 } else {
-                    mk_inferred_msg(&inferred)
+                    mk_inferred_msg(inferred)
                 };
 
                 let mut diags = vec![Diagnostic::error()
                     .with_message("incompatible enum rows declaration")
-                    .with_labels(mk_expr_label(&pos))
+                    .with_labels(mk_expr_label(pos))
                     .with_notes(vec![
                         note1,
                         note2,
@@ -2316,18 +2597,15 @@ impl IntoDiagnostics<FileId> for TypecheckError {
                 // the error message to make it clear that this is not a separate error but a more
                 // precise description of why the unification of a row failed.
                 if let Some(err) = cause {
-                    diags.extend((*err).into_diagnostics(files, stdlib_ids).into_iter().map(
-                        |mut diag| {
-                            diag.message =
-                                format!("while typing enum row `{id}`: {}", diag.message);
-                            diag
-                        },
-                    ));
+                    diags.extend((*err).into_diagnostics(files).into_iter().map(|mut diag| {
+                        diag.message = format!("while typing enum row `{id}`: {}", diag.message);
+                        diag
+                    }));
                 }
 
                 diags
             }
-            TypecheckError::RecordRowConflict {
+            TypecheckErrorData::RecordRowConflict {
                 row,
                 expected,
                 inferred,
@@ -2338,7 +2616,7 @@ impl IntoDiagnostics<FileId> for TypecheckError {
                 diags.push(
                     Diagnostic::error()
                         .with_message("multiple record row declarations")
-                        .with_labels(mk_expr_label(&pos))
+                        .with_labels(mk_expr_label(pos))
                         .with_notes(vec![
                             format!("Found an expression with the row `{row}`"),
                             format!(
@@ -2363,7 +2641,7 @@ impl IntoDiagnostics<FileId> for TypecheckError {
 
                 diags
             }
-            TypecheckError::EnumRowConflict {
+            TypecheckErrorData::EnumRowConflict {
                 row,
                 expected,
                 inferred,
@@ -2374,7 +2652,7 @@ impl IntoDiagnostics<FileId> for TypecheckError {
                 diags.push(
                     Diagnostic::error()
                         .with_message("multiple enum row declarations")
-                        .with_labels(mk_expr_label(&pos))
+                        .with_labels(mk_expr_label(pos))
                         .with_notes(vec![
                             format!("Found an expression with the row `{row}`"),
                             format!(
@@ -2399,7 +2677,7 @@ impl IntoDiagnostics<FileId> for TypecheckError {
 
                 diags
             }
-            TypecheckError::ArrowTypeMismatch {
+            TypecheckErrorData::ArrowTypeMismatch {
                 expected,
                 inferred,
                 type_path,
@@ -2408,62 +2686,46 @@ impl IntoDiagnostics<FileId> for TypecheckError {
             } => {
                 let PathSpan {
                     span: expd_span, ..
-                } = blame_error::path_span(files, &type_path, &expected);
+                } = blame_error::path_span(files, type_path, &expected.to_mainline());
                 let PathSpan {
                     span: actual_span, ..
-                } = blame_error::path_span(files, &type_path, &inferred);
+                } = blame_error::path_span(files, type_path, &inferred.to_mainline());
 
                 let mut labels = vec![
                     secondary(&expd_span).with_message("this part of the expected type"),
                     secondary(&actual_span)
                         .with_message("does not match this part of the inferred type"),
                 ];
-                labels.extend(mk_expr_label(&pos));
+                labels.extend(mk_expr_label(pos));
 
                 let mut diags = vec![Diagnostic::error()
                     .with_message("function types mismatch")
                     .with_labels(labels)
                     .with_notes(vec![
-                        mk_expected_msg(&expected),
-                        mk_inferred_msg(&inferred),
+                        mk_expected_msg(expected),
+                        mk_inferred_msg(inferred),
                         String::from("Could not match the two function types"),
                     ])];
 
                 // We generate a diagnostic for the underlying error, but append a prefix to the
                 // error message to make it clear that this is not a separated error but a more
                 // precise description of why the unification of the row failed.
-                match *cause {
+                match &**cause {
                     // If the underlying error is a type mismatch, printing won't add any useful
                     // information, so we just ignore it.
-                    TypecheckError::TypeMismatch { .. } => (),
-                    err => {
-                        diags.extend(err.into_diagnostics(files, stdlib_ids).into_iter().map(
-                            |mut diag| {
-                                diag.message =
-                                    format!("while matching function types: {}", diag.message);
-                                diag
-                            },
-                        ));
+                    TypecheckErrorData::TypeMismatch { .. } => (),
+                    error => {
+                        diags.extend(error.into_diagnostics(files).into_iter().map(|mut diag| {
+                            diag.message =
+                                format!("while matching function types: {}", diag.message);
+                            diag
+                        }));
                     }
                 }
 
                 diags
             }
-            TypecheckError::IncomparableFlatTypes {
-                expected,
-                inferred,
-                pos,
-            } => {
-                vec![Diagnostic::error()
-                    .with_message("internal error: can't compare unconverted flat types")
-                    .with_labels(mk_expr_label(&pos))
-                    .with_notes(vec![
-                        format!("{} (contract)", mk_expected_msg(&expected.to_string()),),
-                        format!("{} (contract)", mk_inferred_msg(&inferred.to_string()),),
-                        String::from(INTERNAL_ERROR_MSG),
-                    ])]
-            }
-            TypecheckError::ForallParametricityViolation {
+            TypecheckErrorData::ForallParametricityViolation {
                 kind,
                 tail,
                 violating_type,
@@ -2479,37 +2741,37 @@ impl IntoDiagnostics<FileId> for TypecheckError {
                         "values of type `{violating_type}` are not guaranteed to be compatible \
                         with polymorphic {tail_kind} `{tail}`"
                     ))
-                    .with_labels(mk_expr_label(&pos))
+                    .with_labels(mk_expr_label(pos))
                     .with_notes(vec![
                         "Type variables introduced in a `forall` range over all possible types."
                             .to_owned(),
                     ])]
             }
-            TypecheckError::FlatTypeInTermPosition { flat, pos } => {
+            TypecheckErrorData::CtrTypeInTermPos { contract, pos } => {
                 vec![Diagnostic::error()
                     .with_message(
                         "types containing user-defined contracts cannot be converted into contracts"
                     )
                     .with_labels(
-                        pos.into_opt()
+                        pos.as_opt_ref()
                             .map(|span| {
-                                primary(&span).with_message("This type (in contract position)")
+                                primary(span).with_message("This type (in contract position)")
                             })
                             .into_iter()
-                            .chain(flat.pos.into_opt().map(|span| {
-                                secondary(&span).with_message("contains this user-defined contract")
+                            .chain(contract.pos.as_opt_ref().map(|span| {
+                                secondary(span).with_message("contains this user-defined contract")
                             }))
                             .collect(),
                     )]
             }
-            TypecheckError::VarLevelMismatch {
+            TypecheckErrorData::VarLevelMismatch {
                 type_var: constant,
                 pos,
             } => {
-                let mut labels = mk_expr_label(&pos);
+                let mut labels = mk_expr_label(pos);
 
-                if let Some(span) = constant.pos.into_opt() {
-                    labels.push(secondary(&span).with_message("this polymorphic type variable"));
+                if let Some(span) = constant.pos.as_opt_ref() {
+                    labels.push(secondary(span).with_message("this polymorphic type variable"));
                 }
 
                 vec![Diagnostic::error()
@@ -2527,12 +2789,26 @@ impl IntoDiagnostics<FileId> for TypecheckError {
                         ),
                     ])]
             }
-            TypecheckError::OrPatternVarsMismatch { var, pos } => {
+            TypecheckErrorData::InhomogeneousRecord {
+                pos,
+                row_a: expected,
+                row_b: inferred,
+            } => {
+                vec![Diagnostic::error()
+                    .with_message("incompatible types")
+                    .with_labels(mk_expr_label(pos))
+                    .with_notes(vec![
+                        "Expected a dictionary type".into(),
+                        format!("Found a record with a field of type {expected} and a field of type {inferred}"),
+                        "Records are compatible with dicts only if all their fields have the same type".into(),
+                    ])]
+            }
+            TypecheckErrorData::OrPatternVarsMismatch { var, pos } => {
                 let mut labels = vec![primary_alt(var.pos.into_opt(), var.into_label(), files)
                     .with_message("this variable must occur in all branches")];
 
-                if let Some(span) = pos.into_opt() {
-                    labels.push(secondary(&span).with_message("in this or-pattern"));
+                if let Some(span) = pos.as_opt_ref() {
+                    labels.push(secondary(span).with_message("in this or-pattern"));
                 }
 
                 vec![Diagnostic::error()
@@ -2543,16 +2819,18 @@ impl IntoDiagnostics<FileId> for TypecheckError {
                             .into(),
                     ])]
             }
+            // clone() here is unfortunate, but I haven't found a better way to interface typecheck
+            // errors - which can generate a diagnostic by reference - from other errors (import
+            // errors can themselves hide parsing errors), where `into_diagnostics` consume `self`
+            // in the current implementation. Maybe we should migrate from `into_diagnostics` to
+            // `to_diagnostic`, taking the error by reference, but this might cause more copying.
+            TypecheckErrorData::ImportError(err) => err.clone().into_diagnostics(files),
         }
     }
 }
 
-impl IntoDiagnostics<FileId> for ImportError {
-    fn into_diagnostics(
-        self,
-        files: &mut Files<String>,
-        stdlib_ids: Option<&Vec<FileId>>,
-    ) -> Vec<Diagnostic<FileId>> {
+impl IntoDiagnostics for ImportError {
+    fn into_diagnostics(self, files: &mut Files) -> Vec<Diagnostic<FileId>> {
         match self {
             ImportError::IOError(path, error, span_opt) => {
                 let labels = span_opt
@@ -2568,7 +2846,7 @@ impl IntoDiagnostics<FileId> for ImportError {
                 let mut diagnostic: Vec<Diagnostic<FileId>> = error
                     .errors
                     .into_iter()
-                    .flat_map(|e| e.into_diagnostics(files, stdlib_ids))
+                    .flat_map(|e| e.into_diagnostics(files))
                     .collect();
 
                 if let Some(span) = span_opt.as_opt_ref() {
@@ -2579,16 +2857,42 @@ impl IntoDiagnostics<FileId> for ImportError {
 
                 diagnostic
             }
+            ImportError::MissingDependency {
+                parent,
+                missing,
+                pos,
+            } => {
+                let labels = pos
+                    .as_opt_ref()
+                    .map(|span| vec![primary(span).with_message("imported here")])
+                    .unwrap_or_default();
+                let msg = if let Some(parent_path) = parent.as_deref() {
+                    format!(
+                        "unknown package {missing}, imported from package {}",
+                        parent_path.display()
+                    )
+                } else {
+                    format!("unknown package {missing}")
+                };
+
+                vec![Diagnostic::error().with_message(msg).with_labels(labels)]
+            }
+            ImportError::NoPackageMap { pos } => {
+                let labels = pos
+                    .as_opt_ref()
+                    .map(|span| vec![primary(span).with_message("imported here")])
+                    .unwrap_or_default();
+                vec![Diagnostic::error()
+                    .with_message("tried to import from a package, but no package manifest found")
+                    .with_labels(labels)
+                    .with_notes(vec!["did you forget a --manifest-path argument?".to_owned()])]
+            }
         }
     }
 }
 
-impl IntoDiagnostics<FileId> for ExportError {
-    fn into_diagnostics(
-        self,
-        files: &mut Files<String>,
-        _stdlib_ids: Option<&Vec<FileId>>,
-    ) -> Vec<Diagnostic<FileId>> {
+impl IntoDiagnostics for ExportError {
+    fn into_diagnostics(self, files: &mut Files) -> Vec<Diagnostic<FileId>> {
         let mut notes = if !self.path.0.is_empty() {
             vec![format!("When exporting field `{}`", self.path)]
         } else {
@@ -2662,31 +2966,23 @@ impl IntoDiagnostics<FileId> for ExportError {
     }
 }
 
-impl IntoDiagnostics<FileId> for IOError {
-    fn into_diagnostics(
-        self,
-        _files: &mut Files<String>,
-        _stdlib_ids: Option<&Vec<FileId>>,
-    ) -> Vec<Diagnostic<FileId>> {
+impl IntoDiagnostics for IOError {
+    fn into_diagnostics(self, _fil: &mut Files) -> Vec<Diagnostic<FileId>> {
         match self {
             IOError(msg) => vec![Diagnostic::error().with_message(msg)],
         }
     }
 }
 
-impl IntoDiagnostics<FileId> for ReplError {
-    fn into_diagnostics(
-        self,
-        files: &mut Files<String>,
-        stdlib_ids: Option<&Vec<FileId>>,
-    ) -> Vec<Diagnostic<FileId>> {
+impl IntoDiagnostics for ReplError {
+    fn into_diagnostics(self, files: &mut Files) -> Vec<Diagnostic<FileId>> {
         match self {
             ReplError::UnknownCommand(s) => vec![Diagnostic::error()
                 .with_message(format!("unknown command `{s}`"))
                 .with_notes(vec![String::from(
                     "type `:?` or `:help` for a list of available commands.",
                 )])],
-            ReplError::InvalidQueryPath(err) => err.into_diagnostics(files, stdlib_ids),
+            ReplError::InvalidQueryPath(err) => err.into_diagnostics(files),
             ReplError::MissingArg { cmd, msg_opt } => {
                 let mut notes = msg_opt
                     .as_ref()
@@ -2699,6 +2995,164 @@ impl IntoDiagnostics<FileId> for ReplError {
                 vec![Diagnostic::error()
                     .with_message(format!("{cmd}: missing argument"))
                     .with_notes(notes)]
+            }
+        }
+    }
+}
+
+impl CloneTo for TypecheckErrorData<'_> {
+    type Data<'ast> = TypecheckErrorData<'ast>;
+
+    fn clone_to<'to>(data: Self::Data<'_>, dest: &'to AstAlloc) -> Self::Data<'to> {
+        match data {
+            TypecheckErrorData::UnboundIdentifier(loc_ident) => {
+                TypecheckErrorData::UnboundIdentifier(loc_ident)
+            }
+            TypecheckErrorData::MissingRow {
+                id,
+                expected,
+                inferred,
+                pos,
+            } => TypecheckErrorData::MissingRow {
+                id,
+                expected: Type::clone_to(expected, dest),
+                inferred: Type::clone_to(inferred, dest),
+                pos,
+            },
+            TypecheckErrorData::MissingDynTail {
+                expected,
+                inferred,
+                pos,
+            } => TypecheckErrorData::MissingDynTail {
+                expected: Type::clone_to(expected, dest),
+                inferred: Type::clone_to(inferred, dest),
+                pos,
+            },
+            TypecheckErrorData::ExtraRow {
+                id,
+                expected,
+                inferred,
+                pos,
+            } => TypecheckErrorData::ExtraRow {
+                id,
+                expected: Type::clone_to(expected, dest),
+                inferred: Type::clone_to(inferred, dest),
+                pos,
+            },
+            TypecheckErrorData::ExtraDynTail {
+                expected,
+                inferred,
+                pos,
+            } => TypecheckErrorData::ExtraDynTail {
+                expected: Type::clone_to(expected, dest),
+                inferred: Type::clone_to(inferred, dest),
+                pos,
+            },
+            TypecheckErrorData::ForallParametricityViolation {
+                kind,
+                tail,
+                violating_type,
+                pos,
+            } => TypecheckErrorData::ForallParametricityViolation {
+                kind,
+                tail: Type::clone_to(tail, dest),
+                violating_type: Type::clone_to(violating_type, dest),
+                pos,
+            },
+            TypecheckErrorData::UnboundTypeVariable(loc_ident) => {
+                TypecheckErrorData::UnboundTypeVariable(loc_ident)
+            }
+            TypecheckErrorData::TypeMismatch {
+                expected,
+                inferred,
+                pos,
+            } => TypecheckErrorData::TypeMismatch {
+                expected: Type::clone_to(expected, dest),
+                inferred: Type::clone_to(inferred, dest),
+                pos,
+            },
+            TypecheckErrorData::RecordRowMismatch {
+                id,
+                expected,
+                inferred,
+                cause,
+                pos,
+            } => TypecheckErrorData::RecordRowMismatch {
+                id,
+                expected: Type::clone_to(expected, dest),
+                inferred: Type::clone_to(inferred, dest),
+                cause: Box::new(TypecheckErrorData::clone_to(*cause, dest)),
+                pos,
+            },
+            TypecheckErrorData::EnumRowMismatch {
+                id,
+                expected,
+                inferred,
+                cause,
+                pos,
+            } => TypecheckErrorData::EnumRowMismatch {
+                id,
+                expected: Type::clone_to(expected, dest),
+                inferred: Type::clone_to(inferred, dest),
+                cause: cause.map(|cause| Box::new(TypecheckErrorData::clone_to(*cause, dest))),
+                pos,
+            },
+            TypecheckErrorData::RecordRowConflict {
+                row,
+                expected,
+                inferred,
+                pos,
+            } => TypecheckErrorData::RecordRowConflict {
+                row: RecordRow::clone_to(row, dest),
+                expected: Type::clone_to(expected, dest),
+                inferred: Type::clone_to(inferred, dest),
+                pos,
+            },
+            TypecheckErrorData::EnumRowConflict {
+                row,
+                expected,
+                inferred,
+                pos,
+            } => TypecheckErrorData::EnumRowConflict {
+                row: EnumRow::clone_to(row, dest),
+                expected: Type::clone_to(expected, dest),
+                inferred: Type::clone_to(inferred, dest),
+                pos,
+            },
+            TypecheckErrorData::ArrowTypeMismatch {
+                expected,
+                inferred,
+                type_path,
+                cause,
+                pos,
+            } => TypecheckErrorData::ArrowTypeMismatch {
+                expected: Type::clone_to(expected, dest),
+                inferred: Type::clone_to(inferred, dest),
+                type_path,
+                cause: Box::new(TypecheckErrorData::clone_to(*cause, dest)),
+                pos,
+            },
+            TypecheckErrorData::CtrTypeInTermPos { contract, pos } => {
+                TypecheckErrorData::CtrTypeInTermPos {
+                    contract: Ast::clone_to(contract, dest),
+                    pos,
+                }
+            }
+            TypecheckErrorData::VarLevelMismatch { type_var, pos } => {
+                TypecheckErrorData::VarLevelMismatch { type_var, pos }
+            }
+            TypecheckErrorData::InhomogeneousRecord { row_a, row_b, pos } => {
+                TypecheckErrorData::InhomogeneousRecord {
+                    row_a: Type::clone_to(row_a, dest),
+                    row_b: Type::clone_to(row_b, dest),
+                    pos,
+                }
+            }
+            TypecheckErrorData::OrPatternVarsMismatch { var, pos } => {
+                TypecheckErrorData::OrPatternVarsMismatch { var, pos }
+            }
+            TypecheckErrorData::ImportError(import_error) => {
+                TypecheckErrorData::ImportError(import_error)
             }
         }
     }

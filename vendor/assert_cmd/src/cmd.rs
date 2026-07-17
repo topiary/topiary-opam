@@ -37,12 +37,15 @@ impl Command {
     ///
     /// See the [`cargo` module documentation][crate::cargo] for caveats and workarounds.
     ///
+    /// **NOTE:** Prefer [`cargo_bin!`][crate::cargo::cargo_bin!] as this makes assumptions about cargo
+    ///
     /// # Examples
     ///
     /// ```rust,no_run
     /// use assert_cmd::Command;
+    /// use assert_cmd::pkg_name;
     ///
-    /// let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))
+    /// let mut cmd = Command::cargo_bin(pkg_name!())
     ///     .unwrap();
     /// let output = cmd.unwrap();
     /// println!("{:?}", output);
@@ -57,6 +60,10 @@ impl Command {
     /// println!("{:?}", output);
     /// ```
     ///
+    #[deprecated(
+        since = "2.1.0",
+        note = "incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`"
+    )]
     pub fn cargo_bin<S: AsRef<str>>(name: S) -> Result<Self, crate::cargo::CargoError> {
         let cmd = crate::cargo::cargo_bin_cmd(name)?;
         Ok(Self::from_std(cmd))
@@ -604,7 +611,7 @@ impl From<process::Command> for Command {
     }
 }
 
-impl<'c> OutputOkExt for &'c mut Command {
+impl OutputOkExt for &mut Command {
     fn ok(self) -> OutputResult {
         let output = self.output().map_err(OutputError::with_cause)?;
         if output.status.success() {
@@ -643,12 +650,12 @@ impl<'c> OutputOkExt for &'c mut Command {
     }
 }
 
-impl<'c> OutputAssertExt for &'c mut Command {
+impl OutputAssertExt for &mut Command {
     fn assert(self) -> Assert {
         let output = match self.output() {
             Ok(output) => output,
             Err(err) => {
-                panic!("Failed to spawn {:?}: {}", self, err);
+                panic!("Failed to spawn {self:?}: {err}");
             }
         };
         let assert = Assert::new(output).append_context("command", format!("{:?}", self.cmd));

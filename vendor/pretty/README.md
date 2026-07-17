@@ -1,6 +1,7 @@
 # pretty.rs
 
-[![Build Status](https://travis-ci.org/Marwes/pretty.rs.svg?branch=master)](https://travis-ci.org/Marwes/pretty.rs) [![Docs](https://docs.rs/pretty/badge.svg)](https://docs.rs/pretty)
+[![build](https://github.com/Marwes/pretty.rs/actions/workflows/build.yml/badge.svg)](https://github.com/Marwes/pretty.rs/actions/workflows/build.yml)
+[![Docs](https://docs.rs/pretty/badge.svg)](https://docs.rs/pretty)
 
 Pretty printing combinators for Rust
 
