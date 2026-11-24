@@ -94,7 +94,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Nix
-        uses: cachix/install-nix-action@v31
+        uses: cachix/install-nix-action@v32
         with:
           extra_nix_config: |
             ## Access token to avoid triggering GitHub's rate limiting.
